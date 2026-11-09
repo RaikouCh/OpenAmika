@@ -10,7 +10,7 @@ Amika is a Live2D anime girl who talks with you by voice and text in real time, 
 in your city. She runs on your own PC, with OpenRouter or fully local with Ollama. A hosted version runs at
 [mekahime.com/amika](https://www.mekahime.com/amika).
 
-[简体中文](README.zh-CN.md) | [日本語](README.ja.md) | **English**
+[简体中文](README.zh-CN.md) | [日本語](README.ja.md) | **English** | [Tiếng Việt](README.vi.md)
 
 [![Made with Love](https://img.shields.io/badge/Made%20with-Love-ff69b4)](https://www.mekahime.com/openamika)
 [![GitHub](https://img.shields.io/badge/GitHub-zeekk0%2FOpenAmika-181717?logo=github)](https://github.com/zeekk0/OpenAmika)

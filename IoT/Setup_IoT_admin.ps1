@@ -1,9 +1,9 @@
-﻿# OpenAmika smart home — the two installs that need administrator rights, done once:
-#   1. Silicon Labs CP210x USB-UART driver (the SONOFF Zigbee Dongle Plus MG24 is a CP2102N; without it
-#      Windows shows the dongle with "code 28" and no COM port).
-#   2. Eclipse Mosquitto, the MQTT broker zigbee2mqtt and OpenAmika's smart-home server talk through.
-# Everything else (zigbee2mqtt, the OpenAmika IoT server, configuration) needs no elevation and is set up
-# by the OpenAmika launcher / this folder. Run from an elevated PowerShell:
+﻿# OpenAmika smart home — the install that needs administrator rights, done once: Eclipse Mosquitto, the MQTT
+# broker zigbee2mqtt and OpenAmika's smart-home server talk through (winget). The Silicon Labs CP210x USB-UART
+# driver (the SONOFF Zigbee Dongle Plus MG24 is a CP2102N; without it Windows shows the dongle with "code 28" and no
+# COM port) is installed by Install_CP210x_driver.ps1; Setup_IoT_admin.bat runs both. Everything else (zigbee2mqtt,
+# the OpenAmika IoT server, configuration) needs no elevation and is set up by the OpenAmika launcher / this folder.
+# Run from an elevated PowerShell:
 #   powershell -ExecutionPolicy Bypass -File Setup_IoT_admin.ps1
 $ErrorActionPreference = 'Continue'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -14,32 +14,16 @@ Write-Host "OpenAmika smart home — administrator setup" -ForegroundColor Cyan
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not $isAdmin) { Write-Host "This script must run as administrator." -ForegroundColor Red; Stop-Transcript | Out-Null; Read-Host "Press Enter to close"; exit 1 }
 
-# ── 1. CP210x driver ───────────────────────────────────────────────────────────────────────
-$dongle = Get-PnpDevice -PresentOnly -EA SilentlyContinue | Where-Object { $_.InstanceId -like 'USB\VID_10C4&PID_EA60*' }
+# ── 1. CP210x driver: a status line only ─────────────────────────────────────────────────
+# The driver itself is installed by Install_CP210x_driver.ps1 (Windows Update first, then a zip you downloaded in a
+# browser), which Setup_IoT_admin.bat runs after this script. This script downloads nothing: silabs.com serves
+# browsers only (a script gets HTTP 403), and a "download a zip, then install a driver" step is what antivirus
+# heuristics flag (Windows Defender called the repository ZIP Trojan:Script/Sabsik on 2026-11-05).
 $havePort = Get-CimInstance Win32_SerialPort -EA SilentlyContinue | Where-Object { $_.PNPDeviceID -like 'USB\VID_10C4&PID_EA60*' }
-if ($havePort) {
-    Write-Host ("[ok] CP210x driver already working: {0}" -f $havePort.DeviceID) -ForegroundColor Green
-} else {
-    Write-Host "[..] Installing the Silicon Labs CP210x Universal Windows Driver…"
-    $tmp = Join-Path $env:TEMP ("cp210x-" + [guid]::NewGuid().ToString('n'))
-    New-Item -ItemType Directory -Path $tmp | Out-Null
-    $zip = Join-Path $tmp 'CP210x_Universal_Windows_Driver.zip'
-    try {
-        Invoke-WebRequest -Uri 'https://www.silabs.com/documents/public/software/CP210x_Universal_Windows_Driver.zip' -OutFile $zip -UseBasicParsing
-        Expand-Archive -Path $zip -DestinationPath $tmp -Force
-        $inf = Get-ChildItem $tmp -Recurse -Filter 'silabser.inf' | Select-Object -First 1
-        if (-not $inf) { throw "silabser.inf not found in the downloaded archive" }
-        & pnputil /add-driver $inf.FullName /install
-        & pnputil /scan-devices | Out-Null
-        Start-Sleep -Seconds 3
-        $port = Get-CimInstance Win32_SerialPort -EA SilentlyContinue | Where-Object { $_.PNPDeviceID -like 'USB\VID_10C4&PID_EA60*' }
-        if ($port) { Write-Host ("[ok] Zigbee dongle is now {0}" -f $port.DeviceID) -ForegroundColor Green }
-        else { Write-Host "[!!] Driver installed but no COM port yet — unplug and replug the dongle, then check Device Manager." -ForegroundColor Yellow }
-    } catch {
-        Write-Host ("[!!] Driver install failed: {0}" -f $_.Exception.Message) -ForegroundColor Red
-        Write-Host "     Manual route: download CP210x_Universal_Windows_Driver.zip from silabs.com, right-click silabser.inf → Install." -ForegroundColor Yellow
-    }
-}
+$dongle = Get-PnpDevice -PresentOnly -EA SilentlyContinue | Where-Object { $_.InstanceId -like 'USB\VID_10C4&PID_EA60*' }
+if ($havePort) { Write-Host ("[ok] CP210x driver already working: {0}" -f $havePort.DeviceID) -ForegroundColor Green }
+elseif ($dongle) { Write-Host "[..] Zigbee dongle found, no COM port yet: Install_CP210x_driver.ps1 runs next and installs the driver." -ForegroundColor Yellow }
+else { Write-Host "[--] No Zigbee dongle plugged in (fine: plug it in later and run Setup_IoT_admin.bat again for the driver)." }
 
 # ── 2. Mosquitto ───────────────────────────────────────────────────────────────────────────
 $mosq = 'C:\Program Files\mosquitto\mosquitto.exe'
