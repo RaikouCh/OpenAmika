@@ -17,7 +17,8 @@
  *
  * Page API:
  *   const avatar = OpenAmikaAvatar;
- *   await avatar.init({canvas, area, onChunkStart, onQueueEmpty, onModelChange});
+ *   await avatar.init({canvas, area, onChunkStart, onQueueEmpty, onModelChange, fixed});
+ *     (fixed: the desktop pet — she always fills the stage: no drag/zoom of the model, no saved view)
  *   avatar.playChunk(b64wav, emotionKey|null, pauseAfterSec|0, meta|null)
  *   avatar.surfaceEmotion(key)      // early face reaction while nothing is speaking
  *   avatar.flush()                  // barge-in / reset: stop audio, clear queue, idle
@@ -74,6 +75,7 @@
   // callbacks
   let onChunkStart = null, onChunkEnd = null, onQueueEmpty = null, onModelChange = null;
   let areaEl = null, canvasEl = null;
+  let fixedView = false;         // init({fixed}): the desktop pet, where a drag moves her window instead (pet.py)
 
   function safeGet(k) { try { return localStorage.getItem(k); } catch (_) { return null; } }
   function safeSet(k, v) { try { localStorage.setItem(k, v); } catch (_) {} }
@@ -198,7 +200,7 @@
     const w = areaEl.clientWidth || window.innerWidth;
     const h = areaEl.clientHeight || window.innerHeight;
     if (w < 1 || h < 1) return;
-    const saved = safeGet("openamika-avatar-view-" + s.id);
+    const saved = fixedView ? null : safeGet("openamika-avatar-view-" + s.id);
     if (saved) {
       try {
         const v = JSON.parse(saved);
@@ -240,6 +242,7 @@
   }
 
   function setupDragZoom() {
+    if (fixedView) { window.addEventListener("resize", notifyResize); return; }
     let dragging = false, target = null, dragStartX = 0, dragStartY = 0, modelStartX = 0, modelStartY = 0;
     let pinchStartDist = 0, pinchStartScale = 1;
     const begin = (x, y) => {
@@ -317,7 +320,7 @@
       const ns = live2dModel.scale.x * (h / oh);
       live2dModel.scale.set(ns, ns);
       // keep the saved view consistent with the remapped coordinates
-      if (safeGet("openamika-avatar-view-" + currentId)) persistView();
+      if (!fixedView && safeGet("openamika-avatar-view-" + currentId)) persistView();
     }
     repositionAgent();
   }
@@ -1205,6 +1208,7 @@
       onChunkEnd = opts.onChunkEnd || null;
       onQueueEmpty = opts.onQueueEmpty || null;
       onModelChange = opts.onModelChange || null;
+      fixedView = !!opts.fixed;
       setupDragZoom();
       let payload;
       try {

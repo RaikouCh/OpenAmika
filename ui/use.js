@@ -2,9 +2,49 @@
 (function () {
   "use strict";
   const { nav, footer, toast, getJSON, postAction, el, setNavDot, fmt } = window.OA;
-  nav("use"); footer();
+  // her desktop pet: this page in pet.py's window with ?pet=1 (<html class="pet">, set in use.html's head)
+  const PET = document.documentElement.classList.contains("pet");
+  if (!PET) { nav("use"); footer(); }
 
   const $ = (id) => document.getElementById(id);
+
+  // ── desktop pet (?pet=1): her stage alone on a transparent, always-on-top window (pet.py, launch.py --pet). The
+  // stage leaves the page layout (hidden by the CSS) before her model loads, so the renderer takes the window's size;
+  // power and mic move into a small bar that shows on hover (a live mic stays visible), with "full page" and "close".
+  // Dragging her moves the window and the wheel sizes it: pet.py does both (pywebview's drag region, its js_api).
+  // Not here: the first-run wizard (meet her on the full page first), the subtitles, the background photo, the camera
+  // and the paper doll; every handler below stays wired to the same elements.
+  if (PET) {
+    const stage = $("stageArea");
+    document.body.prepend(stage);
+    $("stageCanvas").classList.add("pywebview-drag-region");
+    const host = (name, ...args) => {           // pet.py's js_api; false in a plain browser tab
+      const api = window.pywebview && window.pywebview.api;
+      if (!api || typeof api[name] !== "function") return false;
+      Promise.resolve(api[name](...args)).catch(() => {});
+      return true;
+    };
+    const icon = (title, svg, onclick) => {
+      const button = el("button", { type: "button", class: "pet-btn", title, "aria-label": title, onclick });
+      button.innerHTML = svg;
+      return button;
+    };
+    const bar = el("div", { class: "pet-bar" }, $("powerBtn"), $("micBtn"),
+      icon("Open the full page (closes this window)",
+        '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>',
+        () => { if (!host("full_page")) location.href = "/use"; }),
+      icon("Close her window (she keeps running)",
+        '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>',
+        () => { if (!host("close")) window.close(); }));
+    stage.append(bar);
+    let lastZoom = 0;
+    stage.addEventListener("wheel", (e) => {
+      e.preventDefault();
+      if (e.timeStamp - lastZoom < 60) return;     // a trackpad sends dozens of small steps
+      lastZoom = e.timeStamp;
+      host("zoom", e.deltaY < 0 ? 1.08 : 1 / 1.08);
+    }, { passive: false });
+  }
 
   // ── Support MekaHime popup (the same mechanics as OpenSakura's): the first ask comes 2 minutes after the page has
   // loaded, then every 30 minutes while the page is visible. Never in kiosk mode (?kiosk=1, for clean captures) and
@@ -88,6 +128,7 @@
     const result = await avatar.init({
       canvas: $("stageCanvas"),
       area: $("stageArea"),
+      fixed: PET,                                 // the pet: she always fills her window, no drag/zoom of the model
       onChunkStart: (meta, emotion) => {
         if (meta && meta.kind === "wizard") { if (meta.onstart) meta.onstart(); return; }   // her wizard lines: no turn bookkeeping
         const kind = (meta && meta.kind) || null;
@@ -1115,9 +1156,9 @@ registerProcessor('pcm-pusher', PCMPusher);`;
       renderJobsCard(d);
       // a job still running = a helper is working for her right now: the doll "thinks" meanwhile
       agentBusy = (d.jobs || []).some((j) => j && !TERMINAL_JOB[j.state] && j.state !== "pending");
-      avatar.setAgentVisible(agents);
+      avatar.setAgentVisible(agents && !PET);      // the pet window shows her alone
       avatar.setAgentBase(agentBusy ? "working" : "idle");
-      bubbleNewLines(entries);
+      if (!PET) bubbleNewLines(entries);
     } catch (_) { /* the brain or the gateway is busy; try again later */ }
     toolTimer = setTimeout(pollTools, wsWanted ? 2000 : 10000);
   }
@@ -1402,5 +1443,5 @@ registerProcessor('pcm-pusher', PCMPusher);`;
     render();
     speakCurrent();   // before any click this parks the line on the portrait ("click to hear her")
   }
-  firstRun();
+  if (!PET) firstRun();                          // her first meeting needs the full page
 })();

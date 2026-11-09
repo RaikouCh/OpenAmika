@@ -587,6 +587,37 @@ select option, select optgroup { background: #241627; color: var(--pearl); }
 .stage-topbar select, .stage-topbar .btn { pointer-events: auto; }
 .stage-topbar select { padding: 5px 10px; font-size: 12.5px; border-radius: 9999px; }
 
+/* her desktop pet (?pet=1: pet.py's transparent, always-on-top window): the stage alone, nothing behind her. The page
+   is still there, hidden, so every control keeps its handlers; use.js moves the stage out of it and power + mic into
+   the pet bar, which shows on hover (a live mic stays visible). */
+html.pet, html.pet body { background: transparent; min-height: 0; overflow: hidden; }
+html.pet body::before { display: none; }                   /* the film grain would tint the see-through window */
+html.pet .oa-main { display: none; }
+html.pet .stage-area { position: fixed; inset: 0; width: auto; height: auto; background: transparent; }
+html.pet .stage-bg, html.pet .stage-topbar, html.pet .stage-panel, html.pet .stage-hud, html.pet .bubble,
+html.pet .cam-pip, html.pet .fs-bar { display: none !important; }
+html.pet .stage-empty { inset: 10px; padding: 18px; border-radius: 16px; background: rgba(20, 9, 26, .9); }
+.pet-bar { display: none; }
+html.pet .pet-bar {
+  display: flex; position: absolute; left: 50%; bottom: 10px; transform: translateX(-50%); z-index: 7;
+  align-items: center; gap: 8px; padding: 6px 10px; border-radius: 9999px; border: 1px solid transparent;
+  transition: background .2s ease, border-color .2s ease;
+}
+html.pet .pet-bar > * { opacity: 0; transition: opacity .2s ease; }
+html.pet .stage-area:hover .pet-bar, html.pet .pet-bar:has(:focus-visible) {
+  background: rgba(20, 9, 26, .62); border-color: rgba(216, 180, 226, .22);
+  backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+}
+html.pet .stage-area:hover .pet-bar > *, html.pet .pet-bar:has(:focus-visible) > *, html.pet .pet-bar > .mic-btn.live { opacity: 1; }
+html.pet .pet-bar .power-btn { width: 40px; height: 40px; }
+html.pet .pet-bar .power-btn svg { width: 18px; height: 18px; }
+.pet-btn {
+  width: 32px; height: 32px; padding: 0; border-radius: 50%; cursor: pointer; flex: none;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: rgba(216, 180, 226, .08); border: 1px solid rgba(216, 180, 226, .35); color: var(--lavender);
+}
+.pet-btn:hover { color: #fff; border-color: rgba(216, 180, 226, .7); }
+
 /* power block */
 .power-row { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
 .power-btn {
