@@ -3038,6 +3038,15 @@ def _inherited_reply_lang() -> tuple:
     return (prev, "inherited") if prev else (None, "unknown")
 
 
+def _describe_provider_error(error):
+    """What the model provider said about a failed turn, first line only (f_openrouter.describe_error), or None."""
+    try:
+        from f_openrouter import describe_error
+        return describe_error(error)
+    except Exception:
+        return None
+
+
 def _ws_run_generation(sid: str, turn_id: str, text: str,
                        model_key: str, deep_model_key: str,
                        entry: dict):
@@ -3219,7 +3228,10 @@ def _ws_run_generation(sid: str, turn_id: str, text: str,
         if cancel.is_set():
             _handle_cancel()
         else:
-            _emit("error", {"message": str(e)})
+            # the provider's own first line ("OpenRouter (HTTP 402): Insufficient credits …") when it said one; the
+            # page shows it in the chat log, a Discord / Telegram reply carries it as her system line
+            detail = _describe_provider_error(e)
+            _emit("error", {"message": detail or str(e), "provider": bool(detail)})
             discard_turn(turn_id)
             _emit("end")
     finally:

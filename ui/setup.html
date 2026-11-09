@@ -44,8 +44,9 @@
         <button class="btn small primary" id="orKeySave">Save key</button>
         <span class="card-hint" id="orKeyStatus">checking…</span>
       </div>
-      <p class="card-hint" data-simple>Get a key at openrouter.ai → Keys. That's the only account OpenAmika needs, and in almost all cases the better choice: her tested models, for a few dollars a month.</p>
+      <p class="card-hint" data-simple>Get a key at openrouter.ai → Keys. That's the only account OpenAmika needs, and in almost all cases the better choice: her tested models, for a few dollars a month. OpenRouter is prepaid: add a few dollars of credit first (openrouter.ai/settings/credits); a chat costs about $0.002.</p>
       <p class="card-hint" id="orBackNote" hidden>She is on Ollama right now. <button class="editorial-link" id="orBack">Switch back to the OpenRouter preset →</button></p>
+      <p class="card-hint" id="orGoneNote" hidden style="color:var(--err)"><span id="orGoneText"></span> <button class="editorial-link" id="orGoneBack">Switch back to the OpenRouter preset →</button></p>
     </div>
     <div id="ollamaPanel" hidden>
       <div class="form-row" style="margin-bottom:8px;">
@@ -59,6 +60,7 @@
         <button class="btn small primary" id="olUse">Use this model</button>
         <span class="card-hint" id="olNote"></span>
       </div>
+      <p class="card-hint" id="olWarn" hidden style="color:var(--err)"></p>
       <p class="card-hint">
         <b>Use a model of 27B or more</b> — 70B or more gives the full, reliable experience. Smaller models may be
         really bad: she loses her character, forgets what you told her and breaks her reply format. Install Ollama

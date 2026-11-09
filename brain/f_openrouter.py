@@ -52,6 +52,70 @@ class OpenRouterError(RuntimeError):
     """A single attempted request failed; its receipt has already been settled."""
 
 
+# What the provider said about a failed request, for the person (her chat log, a Discord reply). It rides on the
+# exception as ``provider_detail``; the exception's type and message stay as they were, because memory jobs tell a
+# transient failure from a rejected request by them (f_memory.TRANSIENT_ERROR, REJECTED_REQUEST).
+PROVIDER_HINTS = {
+    401: "the key is wrong or was deleted: paste a new one on Setup → Brain",
+    402: "OpenRouter is prepaid: add a few dollars at https://openrouter.ai/settings/credits, then talk to her again",
+    403: "the key may not use this model (a key limit, or the model is restricted)",
+    429: "too many requests right now: wait a moment",
+}
+NO_ENDPOINT_HINT = "the model may have left OpenRouter: Setup → Brain → Switch back to the OpenRouter preset"
+
+
+def first_line(text, limit=240):
+    """The first non-empty line of a provider's message, cut to `limit` characters."""
+    for line in str(text or "").splitlines():
+        line = " ".join(line.split())
+        if line:
+            return line if len(line) <= limit else line[:limit - 1].rstrip() + "…"
+    return ""
+
+
+def provider_detail(name, status, error):
+    """'OpenRouter (HTTP 402): Insufficient credits … — OpenRouter is prepaid: …' from a status and the provider's
+    error object (a dict with message/code, or a string)."""
+    message = error.get("message") if isinstance(error, dict) else error
+    code = error.get("code") if isinstance(error, dict) else None
+    status = status if isinstance(status, int) and not isinstance(status, bool) else (
+        code if isinstance(code, int) and not isinstance(code, bool) else None)
+    line = first_line(message) or "no reason given"
+    hint = PROVIDER_HINTS.get(status)
+    if status == 404 and re.search(r"no endpoints|not a valid model|model.*(not found|does not exist)", line, re.I):
+        hint = NO_ENDPOINT_HINT
+    return f"{name}{f' (HTTP {status})' if status else ''}: {line}" + (f" — {hint}" if hint else "")
+
+
+def response_detail(name, response):
+    """provider_detail of a refused HTTP response (its JSON error body, else its text); never raises."""
+    status = getattr(response, "status_code", None)
+    try:
+        payload = response.json()
+        error = payload.get("error") if isinstance(payload, dict) else None
+        if error is None and isinstance(payload, dict):
+            error = payload.get("message")
+    except Exception:  # noqa: BLE001  (a body that is not JSON, or one already consumed)
+        try:
+            error = getattr(response, "text", "") or ""
+        except Exception:  # noqa: BLE001
+            error = ""
+    return provider_detail(name, status, error)
+
+
+def describe_error(exc):
+    """The provider's own words about a failed turn (``provider_detail`` on the exception or on what caused it), or
+    None when the failure did not come from a provider's answer."""
+    seen = set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        detail = getattr(exc, "provider_detail", None)
+        if detail:
+            return str(detail)
+        exc = exc.__cause__ or exc.__context__
+    return None
+
+
 def _number(value, name, *, positive=False):
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
         raise ValueError(f"{name} must be a finite number")
@@ -281,6 +345,21 @@ class OpenRouterClient:
     # below (_chat_body, _reservation, _usage). Everything else is shared.
     chat_url = CHAT_URL
     transport = "openrouter"
+    provider_name = "OpenRouter"
+
+    def _raise_for_status(self, response):
+        """response.raise_for_status(), with what the provider said attached as ``provider_detail`` (read before
+        the response is closed; the exception itself is unchanged)."""
+        status = getattr(response, "status_code", None)
+        if isinstance(status, int) and not isinstance(status, bool) and status >= 400:
+            detail = response_detail(self.provider_name, response)
+            try:
+                response.raise_for_status()
+            except Exception as exc:
+                with contextlib.suppress(Exception):
+                    exc.provider_detail = detail
+                raise
+        response.raise_for_status()
 
     def __init__(self, http, api_key, before_call, after_call, *, timeout=(10, 120), event_sink=None,
                  drainer=None):
@@ -335,7 +414,9 @@ class OpenRouterClient:
         if isinstance(data.get("usage"), dict):
             _merge(receipt["raw_usage"], data["usage"])
         if data.get("error"):
-            raise OpenRouterError("OpenRouter returned an error event")
+            error = OpenRouterError("OpenRouter returned an error event")
+            error.provider_detail = provider_detail(self.provider_name, None, data["error"])
+            raise error
         if self.event_sink:
             self.event_sink(copy.deepcopy(data))
         actual = receipt["actual_model"]
@@ -464,7 +545,7 @@ class OpenRouterClient:
         lines, carry, handed = None, None, False
         try:
             response = self._post(self.chat_url, body, True)
-            response.raise_for_status()
+            self._raise_for_status(response)
             response.encoding = "utf-8"
             lines = response.iter_lines(decode_unicode=True)
             for line in lines:
@@ -518,7 +599,7 @@ class OpenRouterClient:
         data = None
         try:
             response = self._post(self.chat_url, body, False)
-            response.raise_for_status()
+            self._raise_for_status(response)
             data = response.json()
             self._event(config, receipt, data)
             choices = data.get("choices") or []
@@ -901,6 +982,63 @@ def fetch_credits(http, key, *, timeout=(5, 15)):
     return {name: _optional_number(data.get(name)) for name in ("total_credits", "total_usage")}
 
 
+def account_balance(http, key, *, timeout=(5, 10)):
+    """What a person sees after saving a key: {"ok": True, "left": USD, "total", "used", "empty", "source"} from the
+    account's credits, else from the key's own limit (``/auth/key``: limit_remaining) when the account endpoint
+    refuses this key; {"ok": False, "refused": bool, "error"} when neither answers. "empty": less than one cent left,
+    so every reply would fail (OpenRouter is prepaid). Never raises; never returns the key."""
+    try:
+        credits = fetch_credits(http, key, timeout=timeout)
+        total, used = credits.get("total_credits"), credits.get("total_usage")
+        if total is not None and used is not None:
+            left = max(0.0, total - used)
+            return {"ok": True, "left": round(left, 4), "total": round(total, 4), "used": round(used, 4),
+                    "empty": left < 0.01, "source": "credits"}
+    except OpenRouterAuthError:
+        pass                       # a key without access to the account's credits: try the key's own limit
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "refused": False, "error": f"OpenRouter did not answer ({type(exc).__name__})"}
+    try:
+        usage = fetch_key_usage(http, key, timeout=timeout)
+    except OpenRouterAuthError:
+        return {"ok": False, "refused": True, "error": "OpenRouter refused this key: it is wrong or was deleted"}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "refused": False, "error": f"OpenRouter did not answer ({type(exc).__name__})"}
+    remaining = usage.get("limit_remaining")
+    if remaining is None:
+        return {"ok": True, "left": None, "used": usage.get("usage"), "empty": False, "source": "key"}
+    return {"ok": True, "left": round(remaining, 4), "used": usage.get("usage"), "empty": remaining < 0.01,
+            "source": "key"}
+
+
+MODELS_URL = "https://openrouter.ai/api/v1/models"
+
+
+def fetch_model_ids(http, *, timeout=(5, 20)):
+    """Every model id OpenRouter offers right now (``GET /api/v1/models``, public: no key), with their canonical
+    slugs. Raises OpenRouterError when the list cannot be read."""
+    response = http.get(MODELS_URL, timeout=timeout, allow_redirects=False)
+    try:
+        if getattr(response, "status_code", 200) != 200:
+            raise OpenRouterHTTPError(getattr(response, "status_code", 0))
+        payload = response.json()
+    except ValueError:
+        raise OpenRouterError("malformed_json") from None
+    finally:
+        with contextlib.suppress(Exception):
+            response.close()
+    rows = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(rows, list) or not rows:
+        raise OpenRouterError("malformed_payload")
+    ids = set()
+    for row in rows:
+        if isinstance(row, dict):
+            for name in ("id", "canonical_slug"):
+                if isinstance(row.get(name), str) and row[name]:
+                    ids.add(row[name])
+    return ids
+
+
 # ---------------------------------------------------------------------------
 # Alibaba Cloud Model Studio (Bailian / DashScope), international deployment.
 #
@@ -1246,6 +1384,7 @@ def _alibaba_model_matches(config, actual):
 class AlibabaClient(OpenRouterClient):
     """Model Studio chat completions with the OpenRouter client's receipts, metering and drain."""
     transport = ALIBABA
+    provider_name = "Model Studio"
 
     def __init__(self, http, api_key, before_call, after_call, *, base_url, timeout=(10, 120), event_sink=None,
                  drainer=None):
@@ -1290,7 +1429,9 @@ class AlibabaClient(OpenRouterClient):
         if isinstance(data.get("usage"), dict):
             _merge(receipt["raw_usage"], data["usage"])
         if data.get("error") or (data.get("code") and data.get("message") and not data.get("choices")):
-            raise OpenRouterError("Model Studio returned an error event")
+            error = OpenRouterError("Model Studio returned an error event")
+            error.provider_detail = provider_detail(self.provider_name, None, data.get("error") or data)
+            raise error
         if self.event_sink:
             self.event_sink(copy.deepcopy(data))
         actual = receipt["actual_model"]

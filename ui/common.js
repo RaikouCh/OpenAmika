@@ -146,6 +146,33 @@
   const LEVEL_LABEL = { ok: "System Ready", warn: "Warnings", err: "System Failures" };
   const health = { level: null, items: [], listeners: new Set(), timer: null, pop: null };
 
+  // The OpenRouter key's balance as one short phrase and a light: OpenRouter is prepaid, so a key on an account
+  // without credits makes every reply fail ({credits} from /api/build_f/openrouter_key?credits=1 or the key save).
+  function keyBalance(k) {
+    const c = (k && k.credits) || null;
+    if (!c) return { level: "ok", text: "" };
+    if (!c.ok) return c.refused ? { level: "err", text: "OpenRouter refused this key (wrong or deleted): paste a new one" }
+                                : { level: "ok", text: "balance not checked right now" };
+    if (c.empty) return { level: "err", text: "no credits: OpenRouter is prepaid — add a few dollars at openrouter.ai/settings/credits" };
+    if (typeof c.left === "number") return { level: "ok", text: "$" + c.left.toFixed(2) + " of credit left" };
+    return { level: "ok", text: "" };
+  }
+
+  // Ollama models under 27B parameters do not hold her character (her prompts are long and Chinese): the wizard and
+  // Setup → Brain warn before one is used. Gemma 4 26B (a mixture of experts) is the one tested exception.
+  const SMALL_MODEL_WARNING = "She will not sound like herself. Use 27B or more, or the OpenRouter preset.";
+  function modelBillions(model) {
+    const m = String((model && (model.parameter_size || model.name)) || "").match(/(\d+(?:\.\d+)?)\s*([BbMm])\b/);
+    if (!m) return null;
+    return parseFloat(m[1]) / (m[2].toLowerCase() === "m" ? 1000 : 1);
+  }
+  function smallModelWarning(model) {
+    if (!model) return "";
+    if (/^gemma-?4:26b/i.test(String(model.name || ""))) return "";
+    const b = modelBillions(model);
+    return b !== null && b < 27 ? SMALL_MODEL_WARNING + " (" + model.name + " has about " + (Math.round(b * 10) / 10) + "B parameters.)" : "";
+  }
+
   async function healthCheck() {
     const items = [];
     const add = (level, name, detail) => items.push({ level, name, detail });
@@ -171,9 +198,19 @@
     } catch (_) {}
     if (usesCloud) {
       try {
-        const k = await getJSON("/api/build_f/openrouter_key");
-        add(k.present ? "ok" : "err", "OpenRouter key", k.present ? "saved " + (k.hint || "") : "no key saved — Setup → Brain (or switch to Ollama)");
+        const k = await getJSON("/api/build_f/openrouter_key?credits=1");
+        const b = keyBalance(k);
+        add(k.present ? b.level : "err", "OpenRouter key", k.present ? "saved " + (k.hint || "") + (b.text ? " · " + b.text : "")
+                                                             : "no key saved — Setup → Brain (or switch to Ollama)");
       } catch (_) { /* the brain row already says it is down */ }
+      // a chosen model that OpenRouter no longer offers makes every reply fail
+      try {
+        const c = await getJSON("/api/build_f/openrouter/catalog");
+        if (c.checked && (c.missing || []).length) {
+          add("err", "OpenRouter models", (c.missing || []).map((x) => x.model + " (" + x.role + ")").join(", ") +
+            " no longer offered — Setup → Brain → Switch back to the OpenRouter preset");
+        }
+      } catch (_) { /* informational only */ }
     }
     if (usesOllama) {
       try {
@@ -302,5 +339,6 @@
     pct: (v) => (Number.isFinite(v) ? (Math.round(v * 10) / 10) + "%" : "—"),
   };
 
-  window.OA = { nav, footer, toast, getJSON, postAction, el, setNavDot, fmt, healthCheck, onHealth };
+  window.OA = { nav, footer, toast, getJSON, postAction, el, setNavDot, fmt, healthCheck, onHealth, keyBalance,
+                smallModelWarning, modelBillions };
 })();

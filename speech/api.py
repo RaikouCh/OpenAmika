@@ -927,16 +927,19 @@ async def build_f_persona_simple_save(request: Request):
 
 
 @app.get("/api/build_f/openrouter_key")
-async def build_f_openrouter_key():
+async def build_f_openrouter_key(credits: Optional[str] = None):
+    """Is a key saved (and, with ?credits=1, the account's balance: the brain asks OpenRouter, at most once a minute)."""
+    want = credits == "1"
     try:
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as client:
-            async with client.get(HANE_URL.rstrip("/") + "/api/build_f/openrouter_key", allow_redirects=False) as response:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15 if want else 5)) as client:
+            async with client.get(HANE_URL.rstrip("/") + "/api/build_f/openrouter_key" + ("?credits=1" if want else ""),
+                                  allow_redirects=False) as response:
                 if response.status != 200:
                     raise HTTPException(status_code=503, detail="Key status unavailable.")
                 payload = await response.json()
         if not isinstance(payload, dict) or payload.get("ok") is not True:
             raise ValueError("Unexpected key status")
-        return {key: payload.get(key) for key in ("ok", "present", "hint")}
+        return {key: payload.get(key) for key in ("ok", "present", "hint", "credits")}
     except HTTPException:
         raise
     except (aiohttp.ClientError, asyncio.TimeoutError, ValueError):
@@ -945,8 +948,29 @@ async def build_f_openrouter_key():
 
 @app.post("/api/build_f/openrouter_key")
 async def build_f_openrouter_key_set(request: Request):
+    # the brain asks OpenRouter for the account's balance before it answers: give it the time
     return await _build_f_control(request, "/api/build_f/openrouter_key", "openrouter-key",
-                                  ("ok", "present", "hint", "note"))
+                                  ("ok", "present", "hint", "note", "credits"), timeout=25)
+
+
+@app.get("/api/build_f/openrouter/catalog")
+async def build_f_openrouter_catalog(refresh: Optional[str] = None):
+    """Whether OpenRouter still offers the models her roles (and the OpenRouter preset) use."""
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as client:
+            async with client.get(HANE_URL.rstrip("/") + "/api/build_f/openrouter/catalog"
+                                  + ("?refresh=1" if refresh == "1" else ""), allow_redirects=False) as response:
+                if response.status != 200:
+                    raise HTTPException(status_code=503, detail="Model check unavailable.")
+                payload = await response.json()
+        if not isinstance(payload, dict):
+            raise ValueError("Unexpected model check")
+        return {key: payload.get(key) for key in ("ok", "checked", "checked_at", "missing", "preset", "preset_missing",
+                                                  "error", "note")}
+    except HTTPException:
+        raise
+    except (aiohttp.ClientError, asyncio.TimeoutError, ValueError):
+        raise HTTPException(status_code=503, detail="Model check unavailable.") from None
 
 
 @app.get("/api/build_f/iot")
