@@ -181,7 +181,7 @@ của nó; các lệnh và nội dung file có trong [docs/TOOLS.md](docs/TOOLS.
 
 **Kết nối các trợ lý.** Trong thư mục OpenAmika, chạy `Copy-Item config\tools.example.json config\tools.json` (chỉ
 khi chưa có `config\tools.json`) và `notepad config\tools.json`. Đặt `"enabled": true` ở đầu file và trong mục của
-trợ lý. Với nanoMuse, hãy đặt `"NANOMUSE_LANGUAGE"` thành `"vi"` (trợ lý sẽ trả lời bằng tiếng Việt). Với Hermes,
+trợ lý. Với nanoMuse, hãy đặt `"NANOMUSE_LANGUAGE"` thành `"en"` (nanoMuse chỉ hỗ trợ en, ja và zh-CN; trợ lý sẽ trả lời bằng tiếng Anh). Với Hermes,
 hãy sao chép key của nó bằng dòng lệnh này rồi dán (Ctrl+V) vào `"HERMES_API_KEY"`:
 
 ```powershell
