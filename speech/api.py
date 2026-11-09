@@ -2832,6 +2832,7 @@ class DialogSession:
         # Cleared when a turn is protected or the memory is wiped.
         self._carry_text: str = ""
         self._last_commit_text: str = ""
+        self._last_commit_key = None        # (text without case/punctuation/spaces, monotonic time): _duplicate_commit
         # Turn ids whose brain message contains the carry (or that are the
         # force-committed turn itself). Protecting one of them makes the carried
         # text durable, so only then is the carry dropped.
@@ -3172,6 +3173,23 @@ class DialogSession:
             "transcript_ms": asr_done_ms,
         })
 
+    # A commit whose text equals the previous commit's within this many seconds is the same utterance committed twice
+    # (2026-11-09, item 15: releasing push-to-talk committed it again and she answered twice): it is dropped.
+    DUPLICATE_COMMIT_S = 5.0
+
+    def _duplicate_commit(self, text) -> bool:
+        """True when text repeats the previous commit within DUPLICATE_COMMIT_S (compared lower-cased, without
+        punctuation or spaces); otherwise text becomes the previous commit."""
+        key = "".join(c for c in (text or "").lower() if c.isalnum())
+        now = time.monotonic()
+        last = getattr(self, "_last_commit_key", None)
+        if key and last is not None and last[0] == key and now - last[1] <= self.DUPLICATE_COMMIT_S:
+            logger.info(f"[dlg {self._peer}] commit dropped: the same text was committed {now - last[1]:.1f}s ago: {text!r}")
+            return True
+        if key:
+            self._last_commit_key = (key, now)
+        return False
+
     async def _do_commit(self, cut_ms: Optional[int] = None):
         """定稿：直接**复用最近一次 partial 的 turn_id**——那轮 Hane 已经在生成，
         某些 chunk 可能甚至已经到达并被缓存在 self._pending_chunks 里。我们把
@@ -3195,6 +3213,9 @@ class DialogSession:
         reuse_id = self._current_sent_id
         self._last_commit_text = text or ""
 
+        if text and reuse_id is not None and self._duplicate_commit(text):
+            await self._send({"type": "commit", "text": "", "raw": raw, "ts": _now_ms()})
+            return
         if text and reuse_id is not None:
             # 复用最近一次 partial 的 id；Hane 上那一轮正在跑（或已经在推 chunk）
             logger.info(
@@ -3237,6 +3258,8 @@ class DialogSession:
                 logger.info(f"[dlg {self._peer}] commit fresh trivial, skip AI: {text!r}")
                 text = ""
             self._last_commit_text = text or ""
+            if text and self._duplicate_commit(text):
+                text = ""
 
         if text:
             tid = self._make_turn_id()
@@ -4279,8 +4302,10 @@ class DialogSession:
         await self._send({"type": "context_status", "queued": bool(text)})
 
     async def force_stop(self):
-        """外部请求停止：如果还有积累的语音，当作 commit。"""
-        if self._speech_frames:
+        """外部请求停止：如果还有积累的语音，当作 commit。Only an utterance still in progress (SPEAKING / SHORT_PAUSE)
+        is committed: after its commit (POST_COMMIT) its audio stays until her protect, and committing it again on a
+        stop made her answer twice (2026-11-09, item 15)."""
+        if self._speech_frames and self._state in ("SPEAKING", "SHORT_PAUSE"):
             await self._do_commit(cut_ms=_now_ms() if self._state == "SPEAKING" else None)
         self._reset_utterance()
 
