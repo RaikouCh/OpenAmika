@@ -15,7 +15,10 @@ What happens
      and vision (found by script path, like Stop_OpenAmika.ps1) and the services that launcher started
      (recorded in logs/instance.json; matched by pid AND executable, so a reused pid is never hit).
      Nothing else on the machine is touched.
-  2. Pre-flight: one light per check — ports, Python environments, files, API keys, her clock, the TTS
+  2. Pre-flight: one light per check — ports (tested with a bind: a port of hers that Windows reserved for
+     Hyper-V / WSL2 / Docker Desktop moves to the next free port outside `netsh interface ipv4 show
+     excludedportrange protocol=tcp`, written to settings.json, and the dashboard shows the new address),
+     Python environments, files, API keys, her clock, the TTS
      server, the tool servers (agents, smart home) and the services below. Red never blocks the launch:
      this is an open project, so you get to see what breaks. The report is kept in logs/preflight.json
      and shown on the Setup page; the dashboard lists what is not green.
@@ -30,6 +33,7 @@ The optional local embedding service (brain/embed_server.py, BAAI/bge-m3 cut to 
 the brain when settings.json has an `embedder` block; the brain reaches it through AMIKA_EMBEDDING_URL.
 """
 import argparse
+import errno
 import importlib.util
 import json
 import os
@@ -41,6 +45,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 import unicodedata
 import webbrowser
 from datetime import datetime
@@ -139,6 +144,168 @@ def port_open(port, host='127.0.0.1', timeout=0.5):
     with socket.socket() as sock:
         sock.settimeout(timeout)
         return sock.connect_ex((host, int(port))) == 0
+
+
+def bind_state(port, host='127.0.0.1'):
+    """'' when a server could bind the port right now (a plain bind, as hers do), 'reserved' when Windows refuses it
+    (WinError 10013: the port lies in a range Windows keeps for Hyper-V, WSL2 or Docker Desktop), 'in use' when a
+    program holds it, else the error. A connect cannot tell a reserved port from a free one: nothing answers on either."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.bind((host, int(port)))
+        return ''
+    except OSError as error:
+        code = getattr(error, 'winerror', None)
+        if code == 10013 or (code is None and error.errno == errno.EACCES):
+            return 'reserved'
+        if code == 10048 or error.errno == errno.EADDRINUSE:
+            return 'in use'
+        return f'{type(error).__name__}: {error}'
+    finally:
+        sock.close()
+
+
+def parse_excluded_ranges(text):
+    """[(first, last)] from `netsh interface ipv4 show excludedportrange protocol=tcp` (any display language: the
+    numbers are the same; a '*' marks an administered range)."""
+    ranges = []
+    for line in (text or '').splitlines():
+        match = re.match(r'\s*(\d{1,5})\s+(\d{1,5})\s*\*?\s*$', line)
+        if match:
+            first, last = int(match.group(1)), int(match.group(2))
+            if 0 < first <= last <= 65535:
+                ranges.append((first, last))
+    return ranges
+
+
+def excluded_port_ranges():
+    """The TCP port ranges Windows keeps for itself right now ([] elsewhere, or when netsh cannot be asked). They
+    are chosen again at every boot, so a port can be fine one day and reserved the next."""
+    if os.name != 'nt':
+        return []
+    try:
+        out = subprocess.run(['netsh', 'interface', 'ipv4', 'show', 'excludedportrange', 'protocol=tcp'],
+                             capture_output=True, text=True, errors='replace', timeout=20, creationflags=NO_WINDOW).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return parse_excluded_ranges(out)
+
+
+def range_of(port, ranges):
+    return next((r for r in ranges if r[0] <= int(port) <= r[1]), None)
+
+
+def next_free_port(port, ranges, avoid, state=None):
+    """The next port above `port` that lies outside every excluded range, is not in `avoid` and binds now; None when
+    there is none up to 65535."""
+    state = state or bind_state
+    candidate = int(port) + 1
+    while candidate <= 65535:
+        hit = range_of(candidate, ranges)
+        if hit:
+            candidate = hit[1] + 1
+            continue
+        if candidate not in avoid and state(candidate) == '':
+            return candidate
+        candidate += 1
+    return None
+
+
+# her own ports in settings.json: (pre-flight row, keys in settings.json); the voice server's is in tts_url and
+# services.tts (its --port and its health URL), and is hers to move only when services.tts starts it on that port
+PORT_SETTINGS = (('web/speech port', ('chat_port',)), ('brain port', ('brain_port',)),
+                 ('messengers port', ('messengers_port',)), ('embedder port', ('embedder', 'port')),
+                 ('vision port', ('vision', 'port')))
+
+
+def own_port_settings(raw):
+    """[(row, keys, port)] of the ports her own processes bind, read from settings.json as written."""
+    out = []
+    for label, keys in PORT_SETTINGS:
+        holder = raw
+        for key in keys[:-1]:
+            holder = holder.get(key) if isinstance(holder, dict) else None
+        if not isinstance(holder, dict):
+            continue
+        if keys[0] == 'vision' and not holder.get('enabled', True):
+            continue
+        port = holder.get(keys[-1]) or (5215 if keys == ('messengers_port',) else None)
+        if isinstance(port, (int, str)) and str(port).isdigit():
+            out.append((label, keys, int(port)))
+    tts_port = urlsplit(str(raw.get('tts_url') or '')).port
+    tts = (raw.get('services') or {}).get('tts') if isinstance(raw.get('services'), dict) else None
+    command = [str(c) for c in (tts or {}).get('command') or []]
+    if tts_port and tts and tts.get('enabled', True) and any(
+            command[i] == '--port' and command[i + 1] == str(tts_port) for i in range(len(command) - 1)):
+        out.append(('TTS port', ('tts_url',), tts_port))
+    return out
+
+
+def set_port(raw, keys, old, new):
+    """Write a new port into settings.json's dict: the key itself, or for the voice server tts_url, services.tts's
+    --port and its health URL."""
+    if keys == ('tts_url',):
+        raw['tts_url'] = re.sub(rf':{old}(?=/|$)', f':{new}', str(raw['tts_url']), count=1)
+        tts = raw['services']['tts']
+        command = tts['command']
+        for i in range(len(command) - 1):
+            if str(command[i]) == '--port' and str(command[i + 1]) == str(old):
+                command[i + 1] = str(new)
+        if isinstance(tts.get('health'), str):
+            tts['health'] = re.sub(rf':{old}(?=/|$)', f':{new}', tts['health'], count=1)
+        return
+    holder = raw
+    for key in keys[:-1]:
+        holder = holder[key]
+    holder[keys[-1]] = new
+
+
+def move_reserved_ports(path=None, state=None, ranges=None, taken=None):
+    """Her ports that Windows has reserved move to the next free port outside the excluded ranges, written to
+    settings.json (a copy of the old file is kept as settings.json.bak). Only a reserved port moves: one that a program
+    holds stays, and its pre-flight row names that program. Returns [(row, keys, old, new or None, range)]."""
+    path = Path(path or ROOT / 'settings.json')
+    state = state or bind_state
+    try:
+        text = path.read_text('utf-8-sig')
+        raw = json.loads(text)
+    except (OSError, ValueError):
+        return []
+    entries = own_port_settings(raw)
+    reserved = [(label, keys, port) for label, keys, port in entries if state(port) == 'reserved']
+    if not reserved:
+        return []
+    ranges = excluded_port_ranges() if ranges is None else ranges
+    avoid = {port for _, _, port in entries} | set(listeners() if taken is None else taken)
+    moves = []
+    for label, keys, port in reserved:
+        new = next_free_port(port, ranges, avoid, state)
+        if new:
+            set_port(raw, keys, port, new)
+            avoid.add(new)
+        moves.append((label, keys, port, new, range_of(port, ranges)))
+        log(f'{label} {port} is reserved by Windows' + (f': moved to {new} in settings.json' if new else
+                                                          ': no free port found above it'))
+    if any(m[3] for m in moves):
+        try:
+            path.with_name(path.name + '.bak').write_text(text, 'utf-8')
+        except OSError:
+            pass
+        path.write_text(json.dumps(raw, indent=2, ensure_ascii=False) + '\n', 'utf-8')
+    return moves
+
+
+def port_move_row(move):
+    """(level, row, detail) for one reserved port: moved (warn, so the dashboard shows it), or stuck (err)."""
+    label, keys, old, new, hit = move
+    where = f'excluded range {hit[0]}-{hit[1]}' if hit else 'WinError 10013'
+    key = 'tts_url and services.tts' if keys == ('tts_url',) else '.'.join(keys)
+    if new:
+        page = f'; her page is now http://localhost:{new}' if keys == ('chat_port',) else ''
+        return 'warn', label, (f'{old} is reserved by Windows ({where}: Hyper-V, WSL2 or Docker Desktop) — moved to {new} '
+                               f'in settings.json ({key}){page}')
+    return 'err', label, (f'{old} is reserved by Windows ({where}) and no free port was found above it — set {key} in '
+                          'settings.json to a port outside `netsh interface ipv4 show excludedportrange protocol=tcp`')
 
 
 def http_json(url, timeout=2):
@@ -1102,8 +1269,10 @@ class Report:
                                         ensure_ascii=False, indent=2), 'utf-8')
 
 
-def preflight(cfg, emb, vis, tools, tools_error, services, agents, procs, deep=False, printer=None, held_iot=()):
-    """held_iot: the smart-home services held back because the IoT safety statement was not accepted."""
+def preflight(cfg, emb, vis, tools, tools_error, services, agents, procs, deep=False, printer=None, held_iot=(),
+              port_moves=()):
+    """held_iot: the smart-home services held back because the IoT safety statement was not accepted. port_moves:
+    what move_reserved_ports did before settings.json was read (a row each, in place of that port's own row)."""
     report = Report(printer)
     for label, python in (('brain python', cfg.get('brain_python')), ('speech python', cfg.get('speech_python')),
                           ('embedder python', (emb or {}).get('python')), ('vision python', (vis or {}).get('python'))):
@@ -1137,10 +1306,14 @@ def preflight(cfg, emb, vis, tools, tools_error, services, agents, procs, deep=F
     names = {p['pid']: p['name'] for p in procs}
     unreadable = {p['pid'] for p in procs if not p['cmd']}      # a medium-integrity process cannot read an elevated one's command line
     ours = own_pids(procs)
+    moved = {m[0]: m for m in port_moves}
     for label, port in (('brain port', cfg.get('brain_port')), ('web/speech port', cfg.get('chat_port')),
                         ('embedder port', (emb or {}).get('port')), ('vision port', (vis or {}).get('port')),
                         ('messengers port', messengers_port(cfg))):
         if port is None:
+            continue
+        if label in moved:
+            report.add(*port_move_row(moved[label]))
             continue
         pid = taken.get(int(port))
         if pid and pid in ours:
@@ -1151,7 +1324,20 @@ def preflight(cfg, emb, vis, tools, tools_error, services, agents, procs, deep=F
         elif pid:
             report.add('err', label, f'{port} is in use by pid {pid} ({names.get(pid, "?")}) — that component cannot start; change settings.json or stop it')
         else:
-            report.add('ok', label, f'{port} free')
+            # a bind, not a connect: a port Windows reserved answers nothing, like a free one, yet no server can bind it
+            state = bind_state(int(port))
+            if not state:
+                report.add('ok', label, f'{port} free')
+            elif state == 'reserved':
+                report.add(*port_move_row((label, dict(PORT_SETTINGS).get(label, (label,)), int(port), None,
+                                           range_of(port, excluded_port_ranges()))))
+            elif state == 'in use':
+                report.add('err', label, f'{port} is in use by another program — that component cannot start; change '
+                                         'settings.json or stop it')
+            else:
+                report.add('warn', label, f'{port}: {state}')
+    if 'TTS port' in moved:
+        report.add(*port_move_row(moved['TTS port']))
     for level, name, detail in voice_checks(cfg, services):
         report.add(level, name, detail)
     level, detail = paper_doll(cfg, None if tools_error else tools)
@@ -1439,6 +1625,8 @@ def main():
     if not settings_path.is_file():
         raise RuntimeError(f'settings.json not found — run the setup first: {SETUP_CORE} (README, "Set her up"); it '
                            'creates settings.json')
+    # a port of hers that Windows reserved (Hyper-V, WSL2, Docker Desktop) moves before anything reads settings.json
+    port_moves = move_reserved_ports(settings_path)
     cfg = json.loads(settings_path.read_text(encoding='utf-8-sig'))
     # interpreter paths may be relative to this folder (envs\brain\Scripts\python.exe from scripts/setup_core.py)
     for holder in (cfg, cfg.get('embedder') or {}, cfg.get('vision') or {}):
@@ -1465,10 +1653,12 @@ def main():
             print(f"  {COLOR.get(level, '') + mark + RESET if color else mark} {name:<22} {detail}")
         print(f'{APP} pre-flight  {ROOT}')
         report = preflight(cfg, emb, vis, tools, tools_error, services, agents, list_processes(), deep=True, printer=printer,
-                           held_iot=held_iot)
+                           held_iot=held_iot, port_moves=port_moves)
         report.save()
         print(f"  {report.count('ok')} ok · {report.count('warn')} warning(s) · {report.count('err')} problem(s). "
               "No models loaded and no API requests made.")
+        print(f'  her page: {url}' + ('  (moved: Windows reserved the old port)' if any(
+            m[0] == 'web/speech port' and m[3] for m in port_moves) else ''))
         print('result: ready' if not report.count('err') else 'result: fix the !! lines above (-- lines are informational)')
         sys.exit(1 if report.count('err') else 0)
 
@@ -1488,7 +1678,8 @@ def main():
         state['grace'] = grace_cleanup(procs)
         state['phase'] = 'pre-flight…'
         procs = list_processes()
-        report = preflight(cfg, emb, vis, tools, tools_error, services, agents, procs, held_iot=held_iot)
+        report = preflight(cfg, emb, vis, tools, tools_error, services, agents, procs, held_iot=held_iot,
+                           port_moves=port_moves)
         report.save()
         state['report'] = report
 
@@ -1621,9 +1812,32 @@ def main():
         print(f'{APP} stopped.')
 
 
+def keep_window_open(code, failed):
+    """Start_OpenAmika.bat runs the launcher in a window of its own (setting OPENAMIKA_PAUSE_ON_ERROR=1), and that
+    window closes the moment the launcher exits. After a failure: print the log's path last and wait for Enter, so
+    the error can be read. A launcher that is stopped (Ctrl+C, Stop_OpenAmika, a new start) exits 0 or is ended from
+    outside, and its window closes as before."""
+    from_bat = os.environ.get('OPENAMIKA_PAUSE_ON_ERROR') == '1'
+    if not code or not (failed or from_bat):
+        return
+    print(f'{APP} stopped with exit code {code}. The launcher log: {LOGS / "launcher.log"} '
+          f'(each part of her writes its own logs\\<name>.log next to it)', file=sys.stderr, flush=True)
+    if from_bat and sys.stdin is not None and sys.stdin.isatty():
+        try:
+            input('Press Enter to close this window.')
+        except (EOFError, KeyboardInterrupt):
+            pass
+
+
 if __name__ == '__main__':
+    code, failed = 0, False
     try:
         main()
+    except SystemExit as stop:
+        code = stop.code if isinstance(stop.code, int) else (0 if stop.code is None else 1)
     except Exception as error:
+        log(f'could not start: {type(error).__name__}: {error}\n{traceback.format_exc()}')
         print(f'{APP} could not start: {error}', file=sys.stderr)
-        sys.exit(1)
+        code, failed = 1, True
+    keep_window_open(code, failed)
+    sys.exit(code)
