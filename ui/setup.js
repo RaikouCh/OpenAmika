@@ -111,21 +111,36 @@
   });
 
   // ── danger zone (bottom of the page): wipe her memory / reset everything ──
-  async function dangerAction(route, action, word, inputId, buttonId, done) {
-    const input = $(inputId), button = $(buttonId), note = $("dangerNote");
+  // The first attempt waits up to WIPE_WAIT_S for her to finish (one short wait). If she is still busy, the answer
+  // says what runs and the Force button appears: she stops what she is doing, and nothing still running can refuse it.
+  // The backup is kept either way (2026-11-09).
+  const WIPE_WAIT_S = 12;
+  async function dangerAction(route, action, word, inputId, buttonId, forceLabel, done, force) {
+    const input = $(inputId), button = $(buttonId), note = $("dangerNote"), forceBtn = $("dangerForce");
     if (input.value.trim() !== word) { toast("Type " + word + " to confirm.", true); input.focus(); return; }
     button.disabled = true;
-    note.textContent = "Working… (she has to be idle: the stage is disconnected while this runs)";
+    forceBtn.hidden = true;
+    note.textContent = force ? "Stopping her and working… (the stage is disconnected while this runs)"
+      : "Working… if she is still talking, this waits up to " + WIPE_WAIT_S + " s for her to finish (the stage is disconnected while this runs)";
     try {
       const response = await fetch(route, {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-Build-F-Action": action },
-        body: JSON.stringify({ confirmation: word }),
+        body: JSON.stringify(force ? { confirmation: word, force: true } : { confirmation: word, wait_s: WIPE_WAIT_S }),
       });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) {
-        const detail = payload.detail || payload.error || ("HTTP " + response.status);
-        throw new Error(response.status === 409 ? detail + " Power her off on the Use page, wait a few seconds, and try again." : detail);
+        const detail = payload.detail;
+        const message = (detail && typeof detail === "object" ? detail.message : detail) || payload.error || ("HTTP " + response.status);
+        if (response.status === 409 && !force) {
+          note.textContent = message;
+          forceBtn.textContent = forceLabel;
+          forceBtn.onclick = () => dangerAction(route, action, word, inputId, buttonId, forceLabel, done, true);
+          forceBtn.hidden = false;
+          toast(message, true);
+          return;
+        }
+        throw new Error(message);
       }
       input.value = "";
       note.textContent = done(payload);
@@ -139,8 +154,10 @@
     } finally { button.disabled = false; }
   }
   $("wipeBtn").addEventListener("click", () => dangerAction("/api/build_f/wipe", "wipe-memory", "WIPE", "wipeConfirm", "wipeBtn",
+    "Force wipe (she stops what she is doing)",
     (p) => "Memory wiped. Backup " + (p.backup_id || "kept") + " under memory_f/backups/."));
   $("resetBtn").addEventListener("click", () => dangerAction("/api/build_f/reset", "reset-all", "RESET", "resetConfirm", "resetBtn",
+    "Force reset (she stops what she is doing)",
     (p) => "Reset done: memory backup " + (p.backup_id || "kept") + " · restored " + ((p.restored || []).join(", ") || "nothing") +
            " · names and city cleared. Open the Use page — she will introduce herself again."));
 
@@ -221,12 +238,40 @@
   }
   $("provOpenrouter").addEventListener("click", () => { provChosen = true; showProvider("openrouter"); });
   $("provOllama").addEventListener("click", () => { provChosen = true; showProvider("ollama"); loadOllama(); });
-  async function backToPreset() {
+
+  // A model switch refused as busy (409, e.g. after a local model crashed mid-answer) shows what runs and an Unlock
+  // button: Unlock stops what she is doing and clears what a crash left behind, then the same switch goes again with
+  // force (what was in flight keeps its model; new calls take the new one).
+  async function switchModels(route, action, body, done) {
+    const note = $("modelBusyNote");
+    note.hidden = true;
     try {
-      const r = await postAction("/api/build_f/preset", "apply-preset", { provider: "openrouter" });
+      done(await postAction(route, action, body));
+    } catch (error) {
+      if (error.status !== 409) { toast(String(error.message || error), true); return; }
+      const unlock = el("button", { type: "button", class: "btn small", text: "Unlock" });
+      unlock.addEventListener("click", async () => {
+        unlock.disabled = true;
+        note.textContent = "Unlocking… (she stops what she is doing)";
+        try {
+          const u = await postAction("/api/build_f/unlock", "unlock", {});
+          done(await postAction(route, action, { ...body, force: true }, { "X-Build-F-Force": "1" }));
+          note.textContent = "Unlocked and switched." + (u.retired_requests ? " Cleared " + u.retired_requests + " request(s) a crash had left open." : "");
+        } catch (unlockError) {
+          note.textContent = String(unlockError.message || unlockError);
+        }
+      });
+      note.replaceChildren(document.createTextNode(String(error.message || error) + " "), unlock);
+      note.hidden = false;
+      toast(String(error.message || error), true);
+    }
+  }
+
+  function backToPreset() {
+    switchModels("/api/build_f/preset", "apply-preset", { provider: "openrouter" }, (r) => {
       toast("Back on OpenRouter: " + (r.applied_preset || "preset applied") + ".");
       loadModels();
-    } catch (error) { toast(String(error.message || error), true); }
+    });
   }
   $("orBack").addEventListener("click", backToPreset);
   $("orGoneBack").addEventListener("click", backToPreset);
@@ -294,16 +339,15 @@
     return text;
   }
   $("olModel").addEventListener("change", warnSmallModel);
-  $("olUse").addEventListener("click", async () => {
+  $("olUse").addEventListener("click", () => {
     const model = $("olModel").value;
     if (!model) { toast("Detect models first.", true); return; }
     const warning = warnSmallModel();
-    try {
-      const r = await postAction("/api/build_f/ollama/use", "ollama-use", { model });
+    switchModels("/api/build_f/ollama/use", "ollama-use", { model }, (r) => {
       toast("She now thinks locally on " + model + " — fully local." + (r.transport === "ollama" ? "" : " (" + r.transport + ")") +
             (warning ? " " + warning : ""), !!warning);
       loadModels(); loadOllama();
-    } catch (error) { toast(String(error.message || error), true); }
+    });
   });
 
   // ── OpenRouter API key ──
@@ -342,19 +386,16 @@
       const select = $("role_" + role);
       if (select) selections[role] = select.value;
     }
-    try {
-      await postAction("/api/build_f/models", "select-models", { selections });
+    switchModels("/api/build_f/models", "select-models", { selections }, () => {
       toast("Model choices saved.");
       loadModels();
-    } catch (error) { toast(String(error.message || error), true); }
+    });
   });
-  $("presetApply").addEventListener("click", async () => {
-    try {
-      await postAction("/api/build_f/preset", "apply-preset", { preset: $("presetSelect").value });
+  $("presetApply").addEventListener("click", () => switchModels("/api/build_f/preset", "apply-preset",
+    { preset: $("presetSelect").value }, () => {
       toast("Preset applied.");
       loadModels();
-    } catch (error) { toast(String(error.message || error), true); }
-  });
+    }));
 
   // ───────────────────── voice adapter ─────────────────────
   let vmap = null;
@@ -700,6 +741,20 @@
       await hearAudio.play();
     } catch (error) { toast("Her voice is unavailable: " + (error.message || error), true); }
     finally { $("pHear").disabled = false; }
+  });
+
+  // her silence remarks ("you're quiet"): off / rare / normal, counted from the moment her voice stops
+  function showSilence(r) {
+    $("pSilence").value = r.silence_remarks || "normal";
+    $("pSilenceNote").textContent = r.interval_s ? "After about " + r.interval_s + " s of quiet, counted from the moment her voice stops."
+      : "She does not remark on silences.";
+  }
+  getJSON("/api/build_f/conversation").then(showSilence).catch(() => { $("pSilenceNote").textContent = "unavailable (is the brain running?)"; });
+  $("pSilence").addEventListener("change", async () => {
+    try {
+      showSilence(await postAction("/api/build_f/conversation", "conversation", { silence_remarks: $("pSilence").value }));
+      toast("Saved — applies at once.");
+    } catch (error) { toast(String(error.message || error), true); }
   });
 
   $("pSave").addEventListener("click", async () => {

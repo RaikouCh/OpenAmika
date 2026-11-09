@@ -150,7 +150,8 @@ class WipeProxyTests(unittest.IsolatedAsyncioTestCase):
                    '_wipe_in_progress': False, '_dialog_active': False, 'HANE_URL': 'http://127.0.0.1:5201',
                    'vision_note_her_speech': lambda s: None}   # vision hook in the audio receipt path
         self.tree = ast.parse(SOURCE.read_text(encoding='utf-8'))
-        wanted = {'_build_f_session_busy', '_retire_wiped_sessions', 'build_f_wipe', 'ws_dialog'}
+        wanted = {'_build_f_session_busy', '_retire_wiped_sessions', 'build_f_wipe', 'ws_dialog',
+                  '_reset_options', '_wait_sessions_idle', '_brain_refusal', 'build_f_reset'}
         nodes = [copy.deepcopy(n) for n in self.tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name in wanted]
         for node in nodes:
             node.decorator_list = []

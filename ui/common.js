@@ -113,10 +113,11 @@
     return response.json();
   }
 
-  async function postAction(url, action, body) {
+  // headers: extra request headers (the model switch after Unlock sends X-Build-F-Force: 1)
+  async function postAction(url, action, body, headers) {
     const response = await fetch(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json", "X-Build-F-Action": action },
+      headers: { ...(headers || {}), "Content-Type": "application/json", "X-Build-F-Action": action },
       body: JSON.stringify(body || {}),
     });
     let payload = null;
@@ -246,6 +247,10 @@
       for (const c of (p.checks || [])) {
         if (c.level && c.level !== "ok") add(c.level === "err" ? "err" : "warn", "Startup: " + c.name, c.detail || "");
       }
+      // the launcher says why the brain did not start (its "brain start" check): the Brain row says it too
+      const why = (p.checks || []).find((c) => c.name === "brain start");
+      const brain = items.find((it) => it.name === "Brain" && it.level === "err");
+      if (why && brain) brain.detail = "not running: " + why.detail;
     } catch (_) {}
     // messengers (optional): only a configured bot that cannot connect is a warning
     try {

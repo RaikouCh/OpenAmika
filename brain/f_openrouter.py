@@ -116,6 +116,24 @@ def describe_error(exc):
     return None
 
 
+# The model streams this process is reading right now (turns and reflections; a drain is not one of them), so that
+# Unlock and the forced wipe can stop her at once: a read blocked on a hung model (an Ollama that crashed mid-answer
+# waits out its 600 s read timeout) ends when its response is closed, and the request settles as usual.
+_STREAMS: dict = {}
+_STREAMS_LOCK = threading.Lock()
+
+
+def abort_streams() -> int:
+    """Close every model stream being read (see _STREAMS). Their readers raise, settle their receipts and end their
+    turn as cancelled when its cancel flag is set. Returns how many were closed."""
+    with _STREAMS_LOCK:
+        responses = list(_STREAMS.values())
+    for response in responses:
+        with contextlib.suppress(Exception):
+            response.close()
+    return len(responses)
+
+
 def _number(value, name, *, positive=False):
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
         raise ValueError(f"{name} must be a finite number")
@@ -545,6 +563,8 @@ class OpenRouterClient:
         lines, carry, handed = None, None, False
         try:
             response = self._post(self.chat_url, body, True)
+            with _STREAMS_LOCK:
+                _STREAMS[handle] = response
             self._raise_for_status(response)
             response.encoding = "utf-8"
             lines = response.iter_lines(decode_unicode=True)
@@ -572,6 +592,8 @@ class OpenRouterClient:
             error = exc
             raise
         finally:
+            with _STREAMS_LOCK:
+                _STREAMS.pop(handle, None)
             if cancelled and error is None and lines is not None and drainer is not None:
                 # The request is in flight and billed either way; finishing it is
                 # cheaper (cached prompt) and records exact usage. Never blocks here.

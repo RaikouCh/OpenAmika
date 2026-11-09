@@ -15,7 +15,9 @@ class ControlProxyTests(unittest.IsolatedAsyncioTestCase):
                    'HTTPException': HTTPException, '_dialog_sessions': set(),
                    '_wipe_in_progress': False, 'HANE_URL': 'http://127.0.0.1:5201'}
         wanted = {'_build_f_session_busy', '_build_f_control', 'build_f_meter_reset',
-                  'build_f_models', 'build_f_select_models', 'build_f_wipe', '_retire_wiped_sessions'}
+                  'build_f_models', 'build_f_select_models', 'build_f_wipe', '_retire_wiped_sessions',
+                  '_reset_options', '_wait_sessions_idle', '_brain_refusal', 'build_f_unlock',
+                  'build_f_conversation_get', 'build_f_conversation_set'}
         tree = ast.parse(SOURCE.read_text(encoding='utf-8'))
         nodes = [copy.deepcopy(n) for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name in wanted]
         for node in nodes:

@@ -64,7 +64,13 @@ emits up to three channels:
 ```
 
 This is what makes her feel alive when you go quiet. `idle_reflection` / `auto_open_from_reflection`
-in `config/build_f.json` switch it.
+in `config/build_f.json` switch it. The silence is counted from the moment her voice stops (the stage's
+`speech_done`), never from the end of her text, and `silence_remarks` (`normal`: 30 s, `rare`: 90 s, `off`; Setup →
+You & Amika → "When you go quiet") sets how soon she remarks on it.
+
+A reply she speaks aloud is asked for about four sentences unless you ask for a story or for more: one line of the
+deep tier's per-turn instruction (`VOICE_REPLY_NOTE` in `brain/webui.py`), not the persona files. Text (Discord,
+Telegram, or the page with her voice off) keeps the long form.
 
 ## Memory
 

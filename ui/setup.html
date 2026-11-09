@@ -37,6 +37,7 @@
       <button type="button" class="prov" id="provOpenrouter" data-prov="openrouter"><b>OpenRouter</b><span>recommended · her tested models · a few dollars a month</span></button>
       <button type="button" class="prov" id="provOllama" data-prov="ollama"><b>Ollama</b><span>fully local · a 27B+ model · a 32 GB GPU or a second PC</span></button>
     </div>
+    <p class="card-hint" id="modelBusyNote" hidden style="margin:0 0 12px;"></p>
     <div id="orPanel">
       <div class="form-row" style="margin-bottom:6px;">
         <div class="field" style="flex:2"><label>OpenRouter API key</label>
@@ -204,6 +205,15 @@
         <input type="text" id="pSayAs" maxlength="80" placeholder="spell it the way it sounds" autocomplete="off"></div>
       <button class="btn small" id="pHear">🔊 Hear her say it</button>
     </div>
+    <div class="form-row" style="margin-bottom:12px;">
+      <div class="field" style="flex:1"><label>When you go quiet, she says something</label>
+        <select id="pSilence">
+          <option value="normal">Normal</option>
+          <option value="rare">Rare (three times as long)</option>
+          <option value="off">Off</option>
+        </select></div>
+      <span class="card-hint" id="pSilenceNote" style="flex:2">Counted from the moment her voice stops.</span>
+    </div>
     <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
       <button class="btn primary" id="pIdentitySave">Save</button>
       <span class="card-hint mono" id="pClock"></span>
@@ -318,7 +328,8 @@
         <p class="card-hint" style="margin:6px 0 10px;">
           She forgets every remembered conversation and fact, and the transcript is cleared. Her personality, your
           names and every setting stay. A local backup is kept under <code>memory_f/backups/</code>.
-          She has to be idle: power off the stage first. Type <b>WIPE</b> to arm.
+          If she is still talking it waits a few seconds; if she is still busy then, <b>Force wipe</b> stops what she
+          is doing. Type <b>WIPE</b> to arm (or run <code>launch.py --wipe-memory</code>).
         </p>
         <div class="form-row">
           <div class="field"><label>Confirmation</label><input type="text" id="wipeConfirm" placeholder="WIPE" autocomplete="off"></div>
@@ -339,6 +350,7 @@
       </div>
     </div>
     <p class="card-hint" id="dangerNote" style="margin:12px 0 0;"></p>
+    <button class="btn small danger" id="dangerForce" hidden style="margin-top:10px;"></button>
   </section>
 
   <!-- links -->

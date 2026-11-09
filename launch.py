@@ -6,6 +6,10 @@
   python launch.py --no-browser    same as the default, without opening the web UI
   python launch.py --pet           same, with her desktop pet window (pet.py: only her, transparent, always on top)
                                    instead of the web UI in the browser; needs pywebview (brain/requirements-pet.txt)
+  python launch.py --wipe-memory   wipe her memory, backup first (Setup → Wipe memory, for scripts): through the
+                                   running stack, or on disk when she is not running; --force stops what she is doing
+  python launch.py --diagnose      one zip in logs/ for a help request: the pre-flight report, the last 200 lines of
+                                   each log, settings.json without keys, Python/driver versions, free disk and GPU memory
 
 The console is a single dashboard that redraws in place: one row per service. A spinning marker means
 it is still launching, or up and working right now (its log is moving); a steady light means it is idle
@@ -39,6 +43,7 @@ import errno
 import importlib.util
 import json
 import os
+import platform
 import re
 import shlex
 import shutil
@@ -50,10 +55,12 @@ import time
 import traceback
 import unicodedata
 import webbrowser
+import zipfile
 from datetime import datetime
 from pathlib import Path
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 ROOT = Path(__file__).resolve().parent
 APP = 'OpenAmika'
@@ -524,6 +531,59 @@ def ollama_checks():
     return out
 
 
+def gpu_info():
+    """[{name, driver, total_mb, used_mb, free_mb}] for each NVIDIA GPU (nvidia-smi); [] without one."""
+    try:
+        out = subprocess.run(['nvidia-smi', '--query-gpu=name,driver_version,memory.total,memory.used,memory.free',
+                              '--format=csv,noheader,nounits'], capture_output=True, text=True, timeout=15,
+                             creationflags=NO_WINDOW).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    gpus = []
+    for line in (out or '').splitlines():
+        parts = [p.strip() for p in line.split(',')]
+        if len(parts) != 5:
+            continue
+        try:
+            gpus.append({'name': parts[0], 'driver': parts[1], 'total_mb': int(float(parts[2])),
+                         'used_mb': int(float(parts[3])), 'free_mb': int(float(parts[4]))})
+        except ValueError:
+            continue
+    return gpus
+
+
+# Her own parts on the GPU (speech recognition, the embedder, her voice) and what her eyes (vision) add, in GB: the
+# README's hardware table. A local model has to fit next to them.
+HER_GPU_GB, HER_EYES_GB = 6.0, 4.0
+
+
+def model_fit_check(vision_on, gpus=None):
+    """(level, detail): does the biggest local Ollama model in use fit this PC's GPU next to her own parts? None when
+    no role runs on an Ollama of this PC, a model's size is unknown (Setup → Brain → Detect records it) or there is no
+    NVIDIA GPU to judge by. Weights plus about 1.5 GB of context cache, plus her parts (item 33: "the model does not fit")."""
+    models = ollama_roles()
+    if not models or (urlsplit(ollama_base()).hostname or '') not in ('127.0.0.1', 'localhost', '::1'):
+        return None
+    try:
+        rows = json.loads((ROOT / 'config' / 'ollama.json').read_text('utf-8-sig')).get('models') or []
+    except Exception:
+        return None
+    sizes = {r.get('name'): r.get('size_gb') for r in rows if isinstance(r, dict)}
+    known = {name: float(sizes[name]) for name in models
+             if isinstance(sizes.get(name), (int, float)) and not isinstance(sizes.get(name), bool)}
+    gpus = gpu_info() if gpus is None else gpus
+    if not known or not gpus:
+        return None
+    total = max(g['total_mb'] for g in gpus) / 1024
+    mine = HER_GPU_GB + (HER_EYES_GB if vision_on else 0.0)
+    name, size = max(known.items(), key=lambda item: item[1])
+    if size + 1.5 + mine <= total:
+        return 'ok', f'{name} ({size:g} GB) fits next to her own parts (~{mine:g} GB) on this {total:.0f} GB GPU'
+    return 'warn', (f'{name} ({size:g} GB) does not fit next to her own parts (~{mine:g} GB) on this {total:.0f} GB GPU: '
+                    'Ollama moves part of it to the CPU (very slow) or fails, and she does not answer — use OpenRouter '
+                    '(Setup → Brain), or Ollama on a PC with a bigger GPU (its address on Setup → Brain)')
+
+
 def her_clock(zone_info=None):
     """(level, detail) for her clock: config/build_f.json "timezone". The brain needs a time-zone database to start at
     all (it builds its fallback zone, Asia/Tokyo, at import), and Windows has none of its own: the tzdata package
@@ -635,6 +695,8 @@ class Service:
         self.started_at = None
         self.last_line = ''         # latest meaningful log line (LogWatch)
         self.last_activity = 0.0    # monotonic time of that line
+        self.why = ''               # why it is not up, in words (start_failure; item 33)
+        self.caveat = ''            # up, but she cannot answer: why (the brain row; brain_caveat)
         self.exe = shutil.which(self.cmd[0]) or self.cmd[0]
 
     def is_up(self):
@@ -729,16 +791,21 @@ class Service:
                 return f"{COLOR['ok']}{SPINNER[frame % len(SPINNER)]}{RESET}", 'ok', f'working · {self.last_line}'
             if self.live and self.live.get('level') in ('ok', 'warn', 'err'):
                 return dot(self.live['level']), self.live['level'], str(self.live.get('detail') or '')
+            if self.caveat:
+                return dot('warn'), 'warn', f'up, but she cannot answer: {self.caveat}'
             where = self.url or self.health or (f'port {self.port}' if self.port else '')
             pid = f'pid {self.proc.pid}' if self.proc is not None else ''
             return dot('ok'), 'ok', ' · '.join(x for x in ('ready', pid, where) if x)
+        why = f' — {self.why}' if self.why else ''
         if self.state == 'external':
+            if self.caveat:
+                return dot('warn'), 'warn', f'{self.detail} — but she cannot answer: {self.caveat}'
             return dot('ok'), 'ok', self.detail
         if self.state == 'timeout':
-            return dot('warn'), 'warn', self.detail
+            return dot('warn'), 'warn', self.detail + why
         if self.state in ('failed', 'exited'):
-            return dot('err'), 'err', self.detail
-        return dot('off'), 'off', self.detail or 'not started'
+            return dot('err'), 'err', self.detail + why
+        return dot('off'), 'off', self.detail or self.why or 'not started'
 
 
 def prime_dongle(port):
@@ -1257,6 +1324,17 @@ class Report:
             else:
                 settle(check)
 
+    def core_states(self, services):
+        """One check per core component that did not come up, saying why ("brain start  the port is taken: …"):
+        logs/preflight.json reaches the Setup page and the health light, so the reason shows in the browser too.
+        A component that came up drops its check (item 33)."""
+        names = {f'{s.name} start' for s in services if s.kind == 'core'}
+        self.checks = [c for c in self.checks if c['name'] not in names]
+        for svc in services:
+            if svc.kind == 'core' and svc.state in ('failed', 'exited', 'timeout'):
+                self.checks.append({'level': 'warn' if svc.state == 'timeout' else 'err', 'name': f'{svc.name} start',
+                                    'detail': svc.why or svc.detail or svc.state})
+
     def iot_accepted(self, version, started):
         """The IoT safety statement was accepted while the launcher runs: its line turns green."""
         for check in self.checks:
@@ -1302,6 +1380,9 @@ def preflight(cfg, emb, vis, tools, tools_error, services, agents, procs, deep=F
                                        'Setup → Brain')
     for level, name, detail in ollama_checks():
         report.add(level, name, detail)
+    fit_check = model_fit_check(vis is not None)
+    if fit_check:
+        report.add(fit_check[0], 'local model fit', fit_check[1])
     level, detail = her_clock()
     report.add(level, 'her clock', detail)
     taken = listeners()
@@ -1605,6 +1686,300 @@ class PetWindow(Service):
             kill_tree(self.proc.pid)         # with its WebView2 processes; its position is saved as it moves
 
 
+# ── why a component did not start (item 33) ─────────────────────────────────────────────
+# A red row used to say only "exited with code 1" (or "not started"), and the help desk asked why every time. The
+# pre-flight's own verdict on the component comes first (its port, its Python), then what its log says since its last
+# start: a missing module, a port held by someone else, a model that does not fit, a key that is missing.
+CORE_CHECKS = {'brain': ('brain python', 'brain port'), 'speech': ('speech python', 'web/speech port'),
+               'embedder': ('embedder python', 'embedder port', 'embedder check'),
+               'vision': ('vision python', 'vision port', 'vision check'),
+               'messengers': ('speech python', 'messengers port')}
+START_FAILURES = (
+    (re.compile(r"ModuleNotFoundError: No module named '([\w.]+)'"),
+     'the environment is broken: the Python module {0} is missing — run the setup again ({setup})'),
+    (re.compile(r'DLL load failed[^\n]*|ImportError: [^\n]*'),
+     'the environment is broken: {match} — run the setup again ({setup})'),
+    (re.compile(r'ZoneInfoNotFoundError|No time zone found'),
+     'the environment is broken: no time-zone database (tzdata) — run the setup again ({setup})'),
+    (re.compile(r'Errno 10048|Errno 10013|Errno 98\b|address already in use|only one usage of each socket address'
+                r'|error while attempting to bind', re.I),
+     'the port is taken: another program (or an earlier OpenAmika) holds it — run Stop_OpenAmika.bat, or change '
+     'the port in settings.json'),
+    (re.compile(r'requires more system memory|CUDA out of memory|OutOfMemoryError|out of memory|cudaMalloc'
+                r'|not enough memory', re.I),
+     'the model does not fit in memory: {match} — use OpenRouter (Setup → Brain), close other programs that use '
+     'the graphics card, or turn her eyes off ("vision": {{"enabled": false}} in settings.json)'),
+    (re.compile(r'A key and both mandatory metering callbacks are required|OPENROUTER_API_KEY|HTTP 401', re.I),
+     'the key is missing or refused: paste your OpenRouter key (first-run wizard, or Setup → Brain)'),
+)
+
+
+def log_since_start(name):
+    """logs/<name>.log since the launcher's last '--- … starting <name>:' line (its newest start), as lines."""
+    try:
+        with open(LOGS / f'{name}.log', 'rb') as handle:
+            handle.seek(0, 2)
+            handle.seek(max(0, handle.tell() - 262144))
+            text = handle.read().decode('utf-8', 'replace')
+    except OSError:
+        return []
+    cut = text.rfind(f' starting {name}: ')
+    if cut >= 0:
+        text = text[text.rfind('\n', 0, cut) + 1:]
+    return text.splitlines()
+
+
+def start_failure(svc, report=None):
+    """Why core component svc is not up, in words ('' when nothing specific is known)."""
+    checks = {c['name']: c for c in (report.checks if report is not None else [])}
+    for name in CORE_CHECKS.get(svc.name, ()):
+        check = checks.get(name)
+        if check and check['level'] == 'err':
+            what = 'the port is taken' if name.endswith('port') else 'the environment is broken'
+            return f"{what}: {check['detail']}"
+    lines = log_since_start(svc.name)
+    text = '\n'.join(lines)
+    for pattern, words in START_FAILURES:
+        match = pattern.search(text)
+        if match:
+            return words.format(*match.groups(), setup=SETUP_CORE, match=fit(match.group(0), 90))
+    tail = [line.strip() for line in lines if line.strip() and not line.startswith('---')]
+    return f'its log ends with: {fit(tail[-1], 160)}' if tail else ''
+
+
+def brain_caveat(report=None):
+    """What keeps a running brain from answering: no OpenRouter key for a cloud role, Ollama down or a model not
+    pulled, a local model that does not fit ('' when nothing). The key is read again each time (the wizard saves it
+    while the launcher runs)."""
+    if not roles_all_local():
+        key = read_env(ROOT / 'brain' / '.env').get('OPENROUTER_API_KEY', '')
+        if not key or key.startswith('sk-or-v1-your'):
+            return 'the key is missing: paste your OpenRouter key (first-run wizard, or Setup → Brain)'
+    for check in (report.checks if report is not None else []):
+        if (check['name'] == 'Ollama' or check['name'].startswith('Ollama model')) and check['level'] == 'err':
+            return check['detail']
+        if check['name'] == 'local model fit' and check['level'] != 'ok':
+            return 'the model does not fit: ' + check['detail']
+    return ''
+
+
+# ── launch.py --wipe-memory (item 49) ─────────────────────────────────────────────────────
+WIPE_WAIT_S = 12
+
+
+def _post_json(url, body, headers, timeout=120):
+    """(status, payload) of a JSON POST; status 0 when nothing answered."""
+    request = Request(url, data=json.dumps(body).encode('utf-8'), method='POST',
+                      headers={'Content-Type': 'application/json', **headers})
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            return response.status, json.loads(response.read() or b'{}')
+    except HTTPError as error:
+        try:
+            payload = json.loads(error.read() or b'{}')
+        except ValueError:
+            payload = {}
+        return error.code, payload if isinstance(payload, dict) else {}
+    except (URLError, OSError, ValueError):
+        return 0, {}
+
+
+def wipe_memory(cfg, force=False, out=print):
+    """Wipe her memory, backup first: Setup → Danger zone → Wipe memory, for scripts. While she runs it goes through
+    her own wipe — the speech gateway (which also disconnects the stage), else the brain — waiting up to WIPE_WAIT_S
+    for her to finish; force stops what she is doing first. When she is not running, the same transaction runs on
+    disk (brain/f_reset.wipe_offline). Returns the exit code: 0 wiped, 2 she is busy, 1 failed."""
+    brain_port, chat_port = int(cfg['brain_port']), int(cfg['chat_port'])
+    body = {'confirmation': 'WIPE', **({'force': True} if force else {'wait_s': WIPE_WAIT_S})}
+    out(f'{APP}: wiping her memory (a backup is taken first)' + (' — forced: she stops what she is doing' if force else '') + '…')
+    if (http_json(f'http://127.0.0.1:{brain_port}/api/evo/health') or {}).get('app') == APP:
+        gateway = f'http://127.0.0.1:{chat_port}'
+        if (http_json(gateway + '/health') or {}).get('app') == APP:
+            status, payload = _post_json(gateway + '/api/build_f/wipe', body,
+                                         {'Origin': gateway, 'X-Build-F-Action': 'wipe-memory'})
+        else:
+            status, payload = _post_json(f'http://127.0.0.1:{brain_port}/api/build_f/wipe', body,
+                                         {'X-Build-F-Action': 'wipe-memory'})
+        if status == 200 and payload.get('ok'):
+            out(f"Memory wiped. Backup: {shown(ROOT / 'memory_f' / 'backups' / str(payload.get('backup_id')))}")
+            return 0
+        detail = payload.get('detail', payload.get('error'))
+        message = detail.get('message') if isinstance(detail, dict) else detail
+        if status == 409:
+            out(message or 'Amika is busy.')
+            if not force:
+                out('Run it again with --force to stop what she is doing and wipe anyway (the backup is still taken).')
+            return 2
+        out(f'The wipe failed (HTTP {status or "no answer"}): {message or "see logs/brain.log"}')
+        return 1
+    if port_open(brain_port):
+        out(f'Something holds the brain port {brain_port} but does not answer like her brain: stop OpenAmika '
+            '(Stop_OpenAmika.bat), then run this again.')
+        return 1
+    if str(ROOT / 'brain') not in sys.path:
+        sys.path.insert(0, str(ROOT / 'brain'))
+    try:
+        import f_reset
+        result = f_reset.wipe_offline(ROOT)
+    except Exception as error:
+        out(f'The wipe failed: {error}')
+        return 1
+    retired = result.get('retired_requests')
+    out(f"She is not running, so it was done on disk. Memory wiped. Backup: {shown(result['backup_dir'])}"
+        + (f' ({retired} unfinished request(s) retired)' if retired else ''))
+    return 0
+
+
+# ── launch.py --diagnose (item 33) ────────────────────────────────────────────────────────
+SECRET_NAME = re.compile(r'key|token|secret|passw|auth|cookie', re.I)
+SECRET_TEXT = re.compile(r'sk-or-v1-[A-Za-z0-9]{16,}|sk-[A-Za-z0-9_-]{20,}|hf_[A-Za-z0-9]{16,}|AIza[0-9A-Za-z_-]{20,}'
+                         r'|Bearer\s+[A-Za-z0-9._~+/=-]{8,}|[MN][A-Za-z\d_-]{23,25}\.[\w-]{6}\.[\w-]{27,}'
+                         r'|\b\d{8,10}:[A-Za-z0-9_-]{35}\b')
+
+
+def known_secrets():
+    """Secret values this install holds (brain/.env, the bots' tokens, the helpers' keys), cut out of anything shared."""
+    values = {v for v in read_env(ROOT / 'brain' / '.env').values() if len(v) >= 8}
+
+    def walk(node, name=''):
+        if isinstance(node, dict):
+            for key, value in node.items():
+                walk(value, str(key))
+        elif isinstance(node, list):
+            for value in node:
+                walk(value, name)
+        elif isinstance(node, str) and len(node) >= 8 and SECRET_NAME.search(name):
+            values.add(node)
+    for rel in ('config/messengers.json', 'config/tools.json'):
+        try:
+            walk(json.loads((ROOT / rel).read_text('utf-8-sig')))
+        except (OSError, ValueError):
+            pass
+    for name in ('HF_TOKEN', 'OPENROUTER_API_KEY', 'API_SERVER_KEY'):
+        if len(os.environ.get(name, '')) >= 8:
+            values.add(os.environ[name])
+    return sorted(values, key=len, reverse=True)
+
+
+def redact(text, secrets):
+    for value in secrets:
+        text = text.replace(value, '<removed>')
+    return SECRET_TEXT.sub('<removed>', text)
+
+
+def scrub(node):
+    """A settings document with every value under a key-like name (key, token, secret, password…) removed."""
+    if isinstance(node, dict):
+        return {k: ('<removed>' if SECRET_NAME.search(str(k)) and isinstance(v, (str, int, float)) and v != ''
+                    else scrub(v)) for k, v in node.items()}
+    if isinstance(node, list):
+        return [scrub(v) for v in node]
+    return node
+
+
+def tail_lines(path, count=200):
+    try:
+        with open(path, 'rb') as handle:
+            handle.seek(0, 2)
+            handle.seek(max(0, handle.tell() - 1048576))
+            return handle.read().decode('utf-8', 'replace').splitlines()[-count:]
+    except OSError:
+        return []
+
+
+def run_python(python, code, timeout=120):
+    """What `python -c code` prints (its last error line when it fails)."""
+    if not python or not Path(python).is_file():
+        return f'missing: {python}'
+    try:
+        result = subprocess.run([python, '-c', code], capture_output=True, text=True, encoding='utf-8',
+                                errors='replace', timeout=timeout, creationflags=NO_WINDOW)
+    except (OSError, subprocess.SubprocessError) as error:
+        return f'could not run: {error}'
+    lines = [ln for ln in ((result.stdout or '') + '\n' + (result.stderr or '')).splitlines() if ln.strip()]
+    return (lines[0] if result.returncode == 0 else lines[-1]) if lines else '?'
+
+
+def system_report(cfg, emb, vis):
+    """Python and driver versions, the GPUs and their memory, free disk, the models she runs on (no secrets)."""
+    lines = [f'{APP} diagnose {datetime.now().isoformat(timespec="seconds")}', f'folder: {ROOT}',
+             f'os: {platform.platform()}', f'launcher python: {sys.version.split()[0]} ({sys.executable})']
+    try:
+        rev = subprocess.run(['git', '-C', str(ROOT), 'log', '-1', '--format=%h %cs %s'], capture_output=True, text=True,
+                             timeout=15, creationflags=NO_WINDOW).stdout.strip()
+        lines.append(f'checkout: {rev or "not a git clone"}')
+    except (OSError, subprocess.SubprocessError):
+        lines.append('checkout: git not found')
+    cfg = cfg or {}
+    for label, holder, key in (('brain python', cfg, 'brain_python'), ('speech python', cfg, 'speech_python'),
+                               ('embedder python', emb or {}, 'python'), ('vision python', vis or {}, 'python')):
+        if holder.get(key):
+            lines.append(f'{label}: {run_python(holder[key], "import sys; print(sys.version.split()[0])")} ({holder[key]})')
+    if cfg.get('speech_python'):
+        lines.append('speech torch: ' + run_python(cfg['speech_python'], 'import torch; print(torch.__version__, "cuda",'
+                                                    ' torch.version.cuda, "available", torch.cuda.is_available())'))
+    gpus = gpu_info()
+    for gpu in gpus:
+        lines.append(f"gpu: {gpu['name']} · driver {gpu['driver']} · memory {gpu['total_mb']} MB total, "
+                     f"{gpu['used_mb']} MB used, {gpu['free_mb']} MB free")
+    if not gpus:
+        lines.append('gpu: no NVIDIA GPU answered (nvidia-smi)')
+    try:
+        disk = shutil.disk_usage(ROOT)
+        lines.append(f'disk: {disk.free / 2**30:.1f} GB free of {disk.total / 2**30:.1f} GB ({ROOT.anchor})')
+    except OSError as error:
+        lines.append(f'disk: {error}')
+    try:
+        picks = json.loads((ROOT / 'config' / 'llm_roles.json').read_text('utf-8-sig')).get('selections') or {}
+        lines.append('models: ' + ', '.join(f'{role} {key}' for role, key in picks.items()))
+    except (OSError, ValueError, AttributeError):
+        lines.append('models: config/llm_roles.json unreadable')
+    if ollama_roles():
+        loaded = http_json(ollama_base() + '/api/ps', timeout=3)
+        rows = (loaded or {}).get('models') if isinstance(loaded, dict) else None
+        lines.append('ollama loaded: ' + (', '.join(f"{m.get('name')} {m.get('size', 0) / 1e9:.1f} GB, "
+                                                    f"{m.get('size_vram', 0) / 1e9:.1f} GB on the GPU"
+                                                    for m in rows if isinstance(m, dict)) if rows else 'nothing (or not answering)'))
+    return '\n'.join(lines) + '\n'
+
+
+def diagnose(cfg, emb=None, vis=None, tools=None, tools_error=None, services=(), agents=(), held_iot=(), out=print):
+    """python launch.py --diagnose: one zip in logs/ to attach to a help request — the pre-flight run now (the report of
+    her last start too), the last 200 lines of each log, settings.json without keys, Python/driver versions, free disk
+    and GPU memory. No .env, and every secret value this install holds is cut from all of it. Returns its path."""
+    LOGS.mkdir(exist_ok=True)
+    path = LOGS / f'diagnose-{datetime.now():%Y%m%d-%H%M%S}.zip'
+    secrets = known_secrets()
+    out(f'{APP}: collecting a diagnose zip (the pre-flight runs again; nothing is started)…')
+    if cfg is not None:
+        try:
+            report = preflight(cfg, emb, vis, tools, tools_error, list(services), list(agents), list_processes(),
+                               deep=True, held_iot=held_iot)
+            now = {'at': datetime.now().isoformat(timespec='seconds'), 'checks': report.checks,
+                   'summary': {k: report.count(k) for k in ('ok', 'warn', 'err')}}
+        except Exception as error:
+            now = {'error': f'the pre-flight failed: {type(error).__name__}: {error}'}
+    else:
+        now = {'error': 'settings.json not found: the setup has not finished (README, "Set her up")'}
+    with zipfile.ZipFile(path, 'w', zipfile.ZIP_DEFLATED) as bundle:
+        bundle.writestr('README.txt', f'{APP} diagnose bundle (launch.py --diagnose). preflight-now.json: the checks run '
+                                      'just now; preflight-last-start.json: what her last start saw; logs/: the last 200 '
+                                      'lines of each log; settings.json: without keys; system.txt: versions, GPU, disk. '
+                                      'brain/.env is never included, and known secrets are replaced by <removed>.\n')
+        bundle.writestr('preflight-now.json', redact(json.dumps(now, ensure_ascii=False, indent=2), secrets))
+        if PREFLIGHT.is_file():
+            bundle.writestr('preflight-last-start.json', redact(PREFLIGHT.read_text('utf-8', errors='replace'), secrets))
+        for log in sorted(LOGS.glob('*.log')):
+            bundle.writestr(f'logs/{log.name}', redact('\n'.join(tail_lines(log)) + '\n', secrets))
+        try:
+            settings = json.loads((ROOT / 'settings.json').read_text('utf-8-sig'))
+            bundle.writestr('settings.json', redact(json.dumps(scrub(settings), ensure_ascii=False, indent=2), secrets))
+        except (OSError, ValueError) as error:
+            bundle.writestr('settings.json', f'unreadable: {error}\n')
+        bundle.writestr('system.txt', redact(system_report(cfg, emb, vis), secrets))
+    return path
+
+
 # ── main ─────────────────────────────────────────────────────────────────────────────────
 def core_services(cfg, emb, vis):
     ports = [int(cfg['brain_port']), int(cfg['chat_port'])]
@@ -1665,6 +2040,13 @@ def main():
     parser.add_argument('--check', action='store_true', help='validate config, environments, imports and files; start nothing')
     parser.add_argument('--no-browser', action='store_true')
     parser.add_argument('--pet', action='store_true', help='open her desktop pet window (pet.py) instead of the browser page')
+    parser.add_argument('--wipe-memory', action='store_true',
+                        help='wipe her memory, a backup first (Setup → Wipe memory, for scripts); waits a few seconds '
+                             'if she is busy')
+    parser.add_argument('--force', action='store_true', help='with --wipe-memory: stop what she is doing and wipe anyway')
+    parser.add_argument('--diagnose', action='store_true',
+                        help='write one zip in logs/ for a help request (pre-flight, log tails, settings without keys, '
+                             'versions, disk, GPU) and print its path')
     args = parser.parse_args()
     enable_vt()
     try:
@@ -1673,6 +2055,9 @@ def main():
         pass
     settings_path = ROOT / 'settings.json'
     if not settings_path.is_file():
+        if args.diagnose:          # the most common first-day problem is exactly this: the zip still helps
+            print(f'Diagnose zip: {diagnose(None)}')
+            return
         raise RuntimeError(f'settings.json not found — run the setup first: {SETUP_CORE} (README, "Set her up"); it '
                            'creates settings.json')
     # a port of hers that Windows reserved (Hyper-V, WSL2, Docker Desktop) moves before anything reads settings.json
@@ -1683,6 +2068,8 @@ def main():
         for key in ('brain_python', 'speech_python', 'python'):
             if isinstance(holder.get(key), str) and holder[key].strip():
                 holder[key] = str(resolve(holder[key]))
+    if args.wipe_memory:
+        sys.exit(wipe_memory(cfg, force=args.force))
     emb = embedder_settings(cfg)
     vis = vision_settings(cfg)
     ports = ([int(cfg['brain_port']), int(cfg['chat_port']), messengers_port(cfg)] + ([int(emb['port'])] if emb else [])
@@ -1693,6 +2080,12 @@ def main():
     # the MQTT broker and zigbee2mqtt wait for the IoT safety statement to be accepted (Tools page)
     services, held_iot, agents = start_plan(cfg, tools)
     url = f"http://localhost:{cfg['chat_port']}"
+
+    if args.diagnose:
+        path = diagnose(cfg, emb, vis, tools, tools_error, services, agents, held_iot)
+        print(f'Diagnose zip: {path}')
+        print('Attach it to your help request (Discord or a GitHub issue). It holds no keys: brain/.env is not in it.')
+        return
 
     if args.check:
         color = sys.stdout.isatty()
@@ -1768,6 +2161,14 @@ def main():
             if svc.state == 'starting':
                 watchers.append(LogWatch(svc))
                 watchers[-1].start()
+        def explain():
+            """Each core row that is not up says why; an up brain that cannot answer says that (item 33)."""
+            for svc in cores:
+                svc.why = start_failure(svc, report) if svc.state in ('failed', 'exited', 'timeout') else ''
+                if svc.name == 'brain':
+                    svc.caveat = brain_caveat(report) if svc.state in ('up', 'external') else ''
+            report.core_states(cores)
+
         # the core, in order, each waiting for its health check — a failure is a red row, not a stop
         for svc in cores:
             state['phase'] = f'starting {svc.name}…'
@@ -1776,12 +2177,14 @@ def main():
                 watchers.append(LogWatch(svc))
                 watchers[-1].start()
                 svc.wait_up(tick=tick)
+            explain()
         state['phase'] = 'waiting for services…'
         deadline = time.monotonic() + 120
         while time.monotonic() < deadline and any(s.state == 'starting' for s in services + agents):
             tick()
             time.sleep(0.4)
         report.resolve(everything)       # "will be started" items that did start are green now, here and on the Setup page
+        explain()
         report.save()
         write_instance(everything)
         page = PageOpener(url, next(s for s in cores if s.name == 'speech'), enabled=not args.no_browser,
@@ -1791,6 +2194,7 @@ def main():
         last_instance = time.monotonic()
         retried = set()
         last_live = 0.0
+        report_starts = [c for c in report.checks if c['name'].endswith(' start')]
         last_iot_check = 0.0
         iot_waiting = any(c['name'] == IOT_STATEMENT_CHECK and c['level'] != 'ok' for c in report.checks)
         while True:
@@ -1832,6 +2236,10 @@ def main():
                     if svc.live_light and svc.state == 'up' and not svc.is_up():
                         svc.state, svc.detail = 'exited', f'stopped answering at {svc.health}'
                         log(f'{svc.name}: {svc.detail}')
+                explain()                        # e.g. the key pasted in the wizard: the brain row turns green
+                if [c for c in report.checks if c['name'].endswith(' start')] != report_starts:
+                    report_starts = [c for c in report.checks if c['name'].endswith(' start')]
+                    report.save()
             # a service that died while coming up gets one more try (the Zigbee dongle, for one, sometimes needs
             # a second reset); the core components do not — their logs say why they stopped
             for svc in services:
@@ -1851,6 +2259,8 @@ def main():
             if changed or time.monotonic() - last_instance > 60:
                 if changed:
                     report.resolve(everything)       # e.g. zigbee2mqtt came up on its retry: its pre-flight line turns green
+                    explain()                        # a core component that died says why, here and on the Setup page
+                    report_starts = [c for c in report.checks if c['name'].endswith(' start')]
                     report.save()
                 write_instance(everything)
                 last_instance = time.monotonic()

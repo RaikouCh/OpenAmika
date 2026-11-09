@@ -51,6 +51,15 @@ MODEL_ROUTES = ("api_surface_model", "api_deep_model", "api_thinking_model")
 MODEL_LIST_ROUTE = "get_models"
 
 
+class ModelSelectionBusy(RuntimeError):
+    """A model switch refused because work is in flight. reasons: what, in words for the page, which offers Unlock
+    (f_controls /api/build_f/unlock, then the switch again with force)."""
+
+    def __init__(self, reasons, message="Wait for active conversation/model work"):
+        super().__init__(message)
+        self.reasons = list(reasons)
+
+
 class RoleManager:
     def __init__(self, g, root, memory, meter, pricing=None):
         self.g, self.root, self.memory, self.meter = g, Path(root), memory, meter
@@ -357,23 +366,45 @@ class RoleManager:
                                "models": [m["name"] for m in self.ollama["models"]]},
                     "embedding": "OpenRouter Gemini embedding 2" if self.embedding else "Gemini embedding 2"}
 
-    def set(self, selections):
+    def _requests_in_flight(self):
+        rows = getattr(self.meter, "active_requests", None)
+        return len(rows()) if callable(rows) else int(self.meter.summary()["active_requests"])
+
+    def set(self, selections, force=False):
+        """force (Unlock, item 32): switch even while work is in flight. A turn, reflection or memory write already
+        running keeps the model it started with; only new calls take the new one. The locks that make the switch
+        atomic are still taken; only the refusals are skipped."""
         selections = self._validate(selections)
+        if not force:
+            # A request a crashed or restarted brain left 'started' is not work in flight: it used to refuse every
+            # switch until a restart 15 minutes later ("Model selection is busy", 2026-11-09). Retire such rows first.
+            retire = getattr(self.meter, "retire_dead", None)
+            if callable(retire):
+                with contextlib.suppress(Exception):
+                    retire()
         # Native dispatch takes _ws_active_lock while registering new work. Hold
         # it across persistence+selection so a partially changed config cannot
         # become observable. Memory locks prevent switching during ingestion.
         with self.lock, self.g["_ws_active_lock"]:
-            if self.g.get("_ws_active") or self.g.get("_thinking_inflight", 0) or self.meter.summary()["active_requests"]:
-                raise RuntimeError("Wait for active conversation/model work")
+            if not force:
+                reasons = [text for busy, text in (
+                    (self.g.get("_ws_active"), "she is answering"),
+                    (self.g.get("_thinking_inflight", 0), "she is reflecting"),
+                    (self._requests_in_flight(), "a model call is in flight")) if busy]
+                if reasons:
+                    raise ModelSelectionBusy(reasons, "Wait for active conversation/model work")
             with contextlib.ExitStack() as stack:
-                for name in ("_worker_lock", "_query_lock"):
+                for name, text in (("_worker_lock", "her memory writer is saving the last conversation"),
+                                   ("_query_lock", "a memory search is running")):
+                    if force:
+                        break
                     lock = getattr(self.memory, name)
                     if not lock.acquire(blocking=False):
-                        raise RuntimeError("Wait for active memory work")
+                        raise ModelSelectionBusy([text], "Wait for active memory work")
                     stack.callback(lock.release)
                 with self.memory._lock:
-                    if self.memory._active_retrievals or self.memory.status().get("pending"):
-                        raise RuntimeError("Wait for queued memory work")
+                    if not force and (self.memory._active_retrievals or self.memory.status().get("pending")):
+                        raise ModelSelectionBusy(["memory work is queued"], "Wait for queued memory work")
                     document = copy.deepcopy(self.document)
                     document["selections"] = selections
                     _write(self.path, document)
@@ -382,9 +413,9 @@ class RoleManager:
                     self.selection_fallback = {}
         return self.get()
 
-    def apply_preset(self, name=None, provider=None):
+    def apply_preset(self, name=None, provider=None, force=False):
         """Select one validated preset for all four roles: by name, or the provider switch
-        (the first available preset of that provider). Same locks and refusals as set()."""
+        (the first available preset of that provider). Same locks and refusals as set() (force: see set)."""
         if (name is None) == (provider is None):
             raise ValueError("Choose a preset name or a provider")
         presets = [p for p in self.document.get("presets", []) if isinstance(p, dict)]
@@ -402,7 +433,7 @@ class RoleManager:
             preset = next((p for p in presets if p.get("provider") == provider and self._preset_ok(p)), None)
             if preset is None:
                 raise ValueError("No validated preset is available for this provider yet")
-        result = self.set(preset["selections"])
+        result = self.set(preset["selections"], force=force)
         result["applied_preset"] = preset["name"]
         return result
 

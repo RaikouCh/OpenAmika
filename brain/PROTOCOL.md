@@ -27,6 +27,8 @@
 | `text` | ✅ | STT 当前转写出的用户文本 |
 | `turn_id` |  | 前端给这轮对话分配的 ID（建议 UUID）；服务端收到后会在本轮所有返回事件里**原样带回来**，前端可据此把 chunk / done / end 绑到正确的消息上。不提供则后端生成 |
 | `my_partial` |  | 打断场景专用：AI 被打断**那一刻嘴上正在说的最后几个字**（定位打断点即可，不是整段已播放文本）。没打断就传空或省略 |
+| `channel` |  | messengers 传 `"discord"` / `"telegram"`（她在手机上看文字，用 `text_scene`）；舞台不传 |
+| `voice` |  | 舞台关掉了她的声音时，发声端传 `false`：这轮回复是给人读的，深层不加「四句左右」的语音长度提示（`webui.VOICE_REPLY_NOTE`）。不传 = 会说出口 |
 
 模型搭配由后端固定（表层 `groq-qwen3-32b`，深层 `claude-4.6-sonnet`），前端不传、不选。
 
@@ -178,6 +180,8 @@ type MessageIn = {
   text: string;          // 必填
   turn_id?: string;      // 建议传（UUID），服务端会在所有返回事件里原样带回
   my_partial?: string;   // 打断场景才传
+  channel?: string;      // messengers: "discord" | "telegram"
+  voice?: boolean;       // false: the page has her voice off (no ~4-sentence voice note)
 };
 
 // 服务端推给前端（所有 out 事件都带 turn_id）

@@ -191,9 +191,11 @@ envs\brain\Scripts\python.exe scripts\setup_tts.py                   # 声、Liv
 
 どちらのセットアップコマンドも、最後にまとめを表示します。1行に1項目で、完了なら`OK`、問題があれば`!!`と直し方、`--`はお知らせだけです（たとえばOpenRouterのキーがまだないとき。最初に開いたときに入力できます）。同じコマンドをもう一度実行すれば、終わった部分は飛ばして続きから再開します。`setup_tts.py`のまとめに`OK voice MekaHime_Amika`と`OK Live2D model Amika`が出ていれば、彼女の声と体はそろっています。`OK paper doll Host`は、彼女のヘルパーの代わりに舞台に立つ紙人形です（[彼女のヘルパー](#彼女のヘルパーhermesとnanomuse)）。
 
+あとで彼女の記憶をリセットしたいときは、Setupページ →「Danger zone」→ **Wipe memory** を使います。すべての会話と事実を忘れ、バックアップは`memory_f\backups\`に残ります。彼女がまだ話していれば数秒待ち、それでも終わらないときは **Force wipe**（彼女はしていることをやめます）を表示します。スクリプトからは`envs\brain\Scripts\python.exe launch.py --wipe-memory`（先に止めるなら`--force`。彼女が起動していなくても使えます）。
+
 ## 話しかける
 
-OpenAmikaフォルダーの`Start_OpenAmika.bat`をダブルクリックします（PowerShellでは`.\Start_OpenAmika.bat`）。コンソールが1つ開いて彼女のすべてが起動し、準備ができるとブラウザーで **http://localhost:53000** が開きます（約1分。初回はもう数分かかります）。最初に開いたとき、彼女が自己紹介をして、あなたの名前と住んでいる街、そして`brain\.env`にまだキーがなければOpenRouterのキーをたずねます。あとは電源ボタンを押して話しかけるか、文字で入力してください。ブラウザーが彼女の声を再生できるよう、ページを一度クリックしてください。
+OpenAmikaフォルダーの`Start_OpenAmika.bat`をダブルクリックします（PowerShellでは`.\Start_OpenAmika.bat`）。コンソールが1つ開いて彼女のすべてが起動し、準備ができるとブラウザーで **http://localhost:53000** が開きます（約1分。初回はもう数分かかります）。最初に開いたとき、彼女が自己紹介をして、あなたの名前と住んでいる街、そして`brain\.env`にまだキーがなければOpenRouterのキーをたずねます。あとは電源ボタンを押して話しかけるか、文字で入力してください。ブラウザーが彼女の声を再生できるよう、ページを一度クリックしてください。あなたが黙っていると、彼女の声が止まった時点から数えて、彼女のほうから話しかけることがあります。頻度はSetup →「You & Amika」→「When you go quiet」で Normal / Rare / Off を選べます。
 
 各ページ右上のランプは彼女の状態です。緑ならすべて正常で、クリックすると問題のある項目が見られます。止めるときは`Stop_OpenAmika.bat`をダブルクリックします（またはコンソールでCtrl+C）。何も起動せずに全体をチェックするには`envs\brain\Scripts\python.exe launch.py --check`を実行します。最後に`result: ready`と出るか、直すべき項目が表示されます。
 
@@ -217,9 +219,12 @@ OpenAmikaフォルダーの`Start_OpenAmika.bat`をダブルクリックしま�
 | 声が途切れる、またはとても遅い | グラフィックカードを使うほかのアプリを閉じるか、`settings.json`で`"vision": {"enabled": false}`にして目の機能をオフにします。 |
 | Ollamaで彼女らしくない、話したことを忘れる、返事が崩れる | モデルが小さすぎます。27B以上（フルで安定した体験には70B以上）のモデルを使うか、OpenRouterに戻してください：Setup → Brain → OpenRouter → 「Switch back to the OpenRouter preset」。 |
 | Ollamaだと返事がとても遅い | `ollama ps`の表示が`100% GPU`ではなくCPU/GPUの割合になっている場合は、モデルが彼女と一緒にビデオメモリに収まっていません。`100% GPU`なら、話をさえぎった直後や、記憶の保存中・会話の振り返り中に返事が遅れるのは、ローカルのモデルでは普通のことです。[どの言語モデルを使う？](#どの言語モデルを使う)を参照してください。 |
+| 記憶の消去やリセットで`Amika is busy` | 彼女が話し終えるまで数秒待ちます。それでも終わらないときは **Force wipe (she stops what she is doing)** を押します。バックアップはどちらの場合も残ります。 |
+| Setupページで`Model selection is busy` | メッセージの横の **Unlock** を押します。彼女はしていることをやめ、切り替えが通ります。 |
+| コンソールのbrainの行（またはSetupページの`brain start`）が赤い | その行に理由が出ます：ポートが使われている、環境が壊れている、モデルが入りきらない、キーがない。 |
 | Toolsページのヘルパーのカードが赤い、または彼女がHermesやnanoMuseにつながらないと言う | `envs\brain\Scripts\python.exe launch.py --check`を実行し、`agent`と`hermes key`の行を見てください。各メッセージの意味と直し方は[docs/TOOLS.md](docs/TOOLS.md#when-it-does-not-work)にあります。 |
 
-各パーツのログは`logs\`にあります。それでも解決しないときは、[Discord](https://discord.gg/mekahime)で質問するか、[issue](https://github.com/zeekk0/OpenAmika/issues)を作成してください。AIコーディングエージェントを使う場合は、[README_IF_YOU_ARE_AI_AGENT.md](README_IF_YOU_ARE_AI_AGENT.md)を読ませてください。
+各パーツのログは`logs\`にあります。それでも解決しないときは、`envs\brain\Scripts\python.exe launch.py --diagnose`を実行してください。`logs\`にzipが1つでき（起動時のチェック、各ログの末尾、キーを除いた設定、バージョン、空きディスクとGPUメモリ）、それを添えて、[Discord](https://discord.gg/mekahime)で質問するか、[issue](https://github.com/zeekk0/OpenAmika/issues)を作成してください。AIコーディングエージェントを使う場合は、[README_IF_YOU_ARE_AI_AGENT.md](README_IF_YOU_ARE_AI_AGENT.md)を読ませてください。
 
 ## オプション機能
 

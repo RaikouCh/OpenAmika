@@ -191,9 +191,11 @@ envs\brain\Scripts\python.exe scripts\setup_tts.py                   # 她的声
 
 两条安装命令最后都会输出一份汇总：每个部分一行，完成显示 `OK`，有问题显示 `!!` 并附上解决方法，`--` 只是提示信息（例如还没有 OpenRouter 密钥：第一次打开页面时会请你填写）。再次运行同一条命令会从中断处继续，已完成的部分会跳过。`setup_tts.py` 的汇总里出现 `OK voice MekaHime_Amika` 和 `OK Live2D model Amika`，就说明她的声音和身体都已就位；`OK paper doll Host` 是替她的帮手站在舞台上的纸娃娃（见[她的帮手](#她的帮手hermes-和-nanomuse)）。
 
+以后想让她的记忆重新开始：Setup 页面 → Danger zone → **Wipe memory**。她会忘掉所有对话和事实，备份保存在 `memory_f\backups\`。如果她还在说话，会先等几秒；还没结束的话，会出现 **Force wipe**（她会停下正在做的事）。在脚本里可以用 `envs\brain\Scripts\python.exe launch.py --wipe-memory`（加 `--force` 先让她停下；她没在运行时也能用）。
+
 ## 和她聊天
 
-双击 OpenAmika 文件夹里的 `Start_OpenAmika.bat`（在 PowerShell 里运行 `.\Start_OpenAmika.bat`）。它会打开一个控制台窗口并启动她的全部组件；准备就绪后，浏览器会打开 **http://localhost:53000**（大约一分钟，第一次会多几分钟）。第一次打开时，她会先做自我介绍，问你的名字和所在城市；如果 `brain\.env` 里还没有密钥，也会请你填入 OpenRouter 密钥。之后按下电源按钮就可以和她说话，或者打字。请先在页面上点击一次，浏览器才会允许她发出声音。
+双击 OpenAmika 文件夹里的 `Start_OpenAmika.bat`（在 PowerShell 里运行 `.\Start_OpenAmika.bat`）。它会打开一个控制台窗口并启动她的全部组件；准备就绪后，浏览器会打开 **http://localhost:53000**（大约一分钟，第一次会多几分钟）。第一次打开时，她会先做自我介绍，问你的名字和所在城市；如果 `brain\.env` 里还没有密钥，也会请你填入 OpenRouter 密钥。之后按下电源按钮就可以和她说话，或者打字。请先在页面上点击一次，浏览器才会允许她发出声音。你一直不说话时，她可能会主动开口，从她的声音停下那一刻开始计时；在 Setup → You & Amika →「When you go quiet」里可以选 Normal、Rare 或 Off。
 
 每个页面右上角的指示灯显示她的状态：绿色表示一切正常，点击它可以查看哪里有问题。双击 `Stop_OpenAmika.bat`（或在她的控制台里按 Ctrl+C）停止她。如果想在不启动任何东西的情况下检查一遍，运行 `envs\brain\Scripts\python.exe launch.py --check`：最后会显示 `result: ready`，或者列出需要修复的地方。
 
@@ -217,9 +219,12 @@ envs\brain\Scripts\python.exe scripts\setup_tts.py                   # 她的声
 | 她的声音断断续续或非常慢 | 关闭其他占用显卡的程序，或者在 `settings.json` 里设置 `"vision": {"enabled": false}` 关掉她的眼睛。 |
 | 用 Ollama 时她不像她自己、记不住事，或者回复格式乱了 | 模型太小了。请换用 27B 及以上的模型（想要完整、稳定的体验用 70B 及以上），或者切回 OpenRouter：Setup → Brain → OpenRouter → “Switch back to the OpenRouter preset”。 |
 | 用 Ollama 时她回复得非常慢 | 如果 `ollama ps` 显示的是 CPU/GPU 比例而不是 `100% GPU`，说明模型和她一起放不进显存。如果显示 `100% GPU`，那么在你打断她之后，或者在她保存记忆、回想对话的时候，回复变慢是本地模型的正常现象。见[用哪种语言模型？](#用哪种语言模型)。 |
+| 清除记忆或全部重置时提示 `Amika is busy` | 它会先等她说完几秒；还没结束的话，点 **Force wipe (she stops what she is doing)**。两种情况下备份都会保留。 |
+| Setup 页面提示 `Model selection is busy` | 点消息旁边的 **Unlock**：她会停下正在做的事，切换就能完成。 |
+| 控制台里 brain 那一行（或 Setup 页面的 `brain start`）是红色 | 那一行会写明原因：端口被占用、环境损坏、模型放不下，或者缺少密钥。 |
 | Tools 页面上帮手的卡片是红色的，或者她说联系不上 Hermes 或 nanoMuse | 运行 `envs\brain\Scripts\python.exe launch.py --check`，看 `agent` 和 `hermes key` 那几行；每条信息的含义和解决方法见 [docs/TOOLS.md](docs/TOOLS.md#when-it-does-not-work)。 |
 
-每个组件的日志都在 `logs\` 里。其他问题可以到 [Discord](https://discord.gg/mekahime) 提问，或提交 [issue](https://github.com/zeekk0/OpenAmika/issues)。如果你在用 AI 编程助手，请让它阅读 [README_IF_YOU_ARE_AI_AGENT.md](README_IF_YOU_ARE_AI_AGENT.md)。
+每个组件的日志都在 `logs\` 里。其他问题请先运行 `envs\brain\Scripts\python.exe launch.py --diagnose`：它会在 `logs\` 里生成一个 zip（启动检查、每个日志的末尾、去掉密钥的设置、版本、剩余磁盘和显存），提问时附上它，可以到 [Discord](https://discord.gg/mekahime) 提问，或提交 [issue](https://github.com/zeekk0/OpenAmika/issues)。如果你在用 AI 编程助手，请让它阅读 [README_IF_YOU_ARE_AI_AGENT.md](README_IF_YOU_ARE_AI_AGENT.md)。
 
 ## 可选功能
 

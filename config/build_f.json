@@ -21,6 +21,7 @@
   "budget_scope": "live",
   "idle_reflection": true,
   "auto_open_from_reflection": true,
+  "silence_remarks": "normal",
   "legacy_consolidation": false,
   "memory_profile": "live",
   "settlement_enabled": true,
