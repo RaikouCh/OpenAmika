@@ -148,7 +148,7 @@ class ShippedTests(unittest.TestCase):
                        "if (!PET) firstRun()", 'host("zoom"', "pywebview-drag-region"):
             self.assertIn(needle, use)
         js = pet.PetApi("http://localhost:53000")
-        for name in ("zoom", "full_page", "close"):                  # what use.js calls on window.pywebview.api
+        for name in ("zoom", "full_page", "close", "handover"):      # what use.js calls on window.pywebview.api
             self.assertTrue(callable(getattr(js, name)))
         self.assertFalse([n for n in vars(js) if not n.startswith("_")])   # nothing else is exposed to the page
 

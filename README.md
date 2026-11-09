@@ -327,25 +327,41 @@ GPU memory). Attach it when you ask on [Discord](https://discord.gg/mekahime) or
   server: the bot must share a server with you before a DM works.
 - **Your phone**: `Tailscale_Serve_OpenAmika.bat` makes her reachable on your own devices over
   [Tailscale](https://tailscale.com).
-- **Desktop pet**: she stands on your desktop by herself, always on top of your other windows
-  ([below](#desktop-pet-mode)).
+- **Desktop pet**: she stands on your desktop by herself, always on top of your other windows. Press **Desktop pet**
+  on the Use page ([below](#desktop-pet-mode)).
 
 ## Desktop pet mode
 
 She can also stand on your desktop by herself: a see-through window with only her in it, on top of your other
-programs, with her voice, lip-sync and expressions as on the Use page. Windows only. It needs one install, once:
+programs, with her voice, lip-sync and expressions as on the Use page. Windows only.
+
+**From the Use page (the easy way):** press **Desktop pet** at the top of her stage.
+
+1. The first time, the page asks for one small install (pywebview, a few megabytes). Press **Install and open**.
+2. Her window opens on your desktop and the conversation goes with her: if she was on, she is on there; if your
+   microphone was on, it is on there.
+3. The page now says *Amika is on your desktop*. Press **Bring her back here** and she is on the page again.
+
+The button shows only in a browser on the PC that runs her (her window opens on that PC's desktop), so not on your
+phone.
+
+**Straight to the desktop:** double-click `Start_OpenAmika_Pet.bat` instead of `Start_OpenAmika.bat` (or run
+`launch.py --pet`): when she is ready, her window opens instead of the browser page. This way does not install
+anything by itself. Without the install the page opens in your browser as usual, and its **Desktop pet** button
+does the install; or do it by hand, once:
 
 ```powershell
 envs\brain\Scripts\python.exe -m pip install -r brain\requirements-pet.txt
 ```
 
-Then double-click `Start_OpenAmika_Pet.bat` instead of `Start_OpenAmika.bat` (or run `launch.py --pet`): when she
-is ready, her window opens instead of the browser page. Hover over her for a small bar: power, microphone, the full
-page, close. Click the microphone and talk as usual. Drag her to move the window; the mouse wheel over her makes
-her bigger or smaller; she comes back where you left her. Closing her window does not stop her:
-`envs\brain\Scripts\python.exe pet.py` opens it again, `Stop_OpenAmika.bat` stops everything.
+Hover over her for a small bar: power, microphone, the full page, close. Click the microphone and talk as usual.
+Drag her to move the window; the mouse wheel over her makes her bigger or smaller; she comes back where you left
+her. Closing her window does not stop her: the **Desktop pet** button (or `envs\brain\Scripts\python.exe pet.py`)
+opens it again, `Stop_OpenAmika.bat` stops everything.
 
-- One conversation at a time: the full-page button closes her window, then opens the page in your browser.
+- One conversation at a time: while she is on your desktop, the page waits for her. **Bring her back here** on the
+  page, or the full-page button on her window, moves her back.
+- Her desktop window has no text box: talk to her, or bring her back to the page to type.
 - Meet her on the full page first: the first-run wizard, the camera, the background photo and her helpers' paper
   doll are there.
 - The see-through corners of her window still take your clicks: keep it snug around her.

@@ -39,6 +39,7 @@ class Gateway(unittest.IsolatedAsyncioTestCase):
         self.ns = {'asyncio': asyncio, 'json': json, 'aiohttp': self.http, 'Request': Request,
                    'HTTPException': HTTPException, 'WebSocket': Socket, '_dialog_sessions': set(),
                    '_wipe_in_progress': False, '_dialog_active': False, 'HANE_URL': 'http://127.0.0.1:5201',
+                   '_dialog_owner': None,
                    'WebSocketDisconnect': type('WebSocketDisconnect', (Exception,), {}),
                    'logger': SimpleNamespace(info=lambda *a: None, debug=lambda *a: None, warning=lambda *a: None,
                                              exception=lambda *a: None)}
@@ -173,6 +174,7 @@ class TruthfulSessionTests(Gateway):
         self.assertEqual(acks, [{'type': 'tts_finished', 'turn_id': 't-0', 'idx': 0}])
         self.assertTrue(any(e.get('type') == 'ai_error' and 'service control' in e.get('message', '') for e in sent))
         self.assertFalse(self.ns['_dialog_active'])
+        self.assertIsNone(self.ns['_dialog_owner'])
 
 
 class UnlockProxyTests(Gateway):

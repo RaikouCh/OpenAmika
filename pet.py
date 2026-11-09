@@ -6,6 +6,7 @@
     envs\\brain\\Scripts\\python.exe pet.py           her window, for the OpenAmika that runs from this folder
     ... --url http://localhost:53000                another address (default: settings.json "chat_port")
     python launch.py --pet, Start_OpenAmika_Pet.bat start everything, then this window instead of the browser page
+    the Use page's "Desktop pet" button             the same window, opened from the web UI (she moves there and back)
 
 The window is the Use page with ?pet=1 (her stage alone, on a transparent page: ui/use.js "desktop pet") in Microsoft
 Edge WebView2, through pywebview, which is optional:
@@ -18,11 +19,19 @@ microphone, full page, close). Her voice and your microphone use the page's dial
 its own page only. Its position and size are kept in logs\\pet-window\\window.json, next to its own WebView2 profile
 (logs\\pet-window\\webview). Exit code 0 when the window was closed; 1 when OpenAmika does not answer at the
 address (or the window failed); 2 without pywebview, WebView2 or Windows.
+
+The web UI opens and closes this window too: the Use page's "Desktop pet" button and its "Bring her back here"
+(speech/pet_window.py). While the window lives it holds a named Windows event (instance_name()). The event existing
+says "her window is open": a second start finds it and leaves at once, with exit code 0. Setting the event closes
+the window. A second event, "<name>-ready", appears when her page in the window has asked for its hand-over: --power
+and --mic are what the page that sent her here had on, and her page in the window switches the same on, once (nothing
+of it travels in the address). --close-with PID closes the window when that process ends: the server that opened it.
 """
 from __future__ import annotations
 
 import argparse
 import ctypes
+import hashlib
 import json
 import os
 import sys
@@ -43,6 +52,9 @@ MIN_SIZE = (160, 240)
 MARGIN = 24                      # first start: this far from the bottom-right corner of the primary screen's work area
 DWMWA_SYSTEMBACKDROP_TYPE, DWMSBT_NONE = 38, 1
 SWP_NOZORDER, SWP_NOACTIVATE = 0x0004, 0x0010
+SYNCHRONIZE, INFINITE = 0x00100000, 0xFFFFFFFF
+ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS = 5, 183
+READY = '-ready'                 # the second event's name: instance_name() + READY (speech/pet_window.py READY)
 
 
 # ── plain helpers (no pywebview, no Windows; tests/test_pet.py) ─────────────────────────────────────────────────
@@ -58,6 +70,15 @@ def chat_url(settings_path: Path) -> str:
 
 def pet_url(base: str) -> str:
     return base.rstrip('/') + '/use?pet=1'
+
+
+def instance_name(root=ROOT) -> str:
+    """The name of the Windows event this window holds while it is open (speech/pet_window.py event_name(): keep the
+    two the same). The web UI asks "is her window open?" by looking for it, and closes the window by setting it. One
+    per OpenAmika folder, so two installs on one PC do not see each other's window; "Local" keeps it inside this
+    Windows session."""
+    key = os.path.normcase(str(Path(root).resolve()))
+    return r'Local\OpenAmika-pet-' + hashlib.sha1(key.encode('utf-8')).hexdigest()[:16]
 
 
 def same_origin(url: str, base: str) -> bool:
@@ -170,6 +191,81 @@ def _user32():
     return user32
 
 
+def _kernel32():
+    """kernel32 with its own error slot (ctypes.get_last_error) and prototypes: a handle is a pointer."""
+    if 'kernel32' not in _DLLS:
+        from ctypes import wintypes
+        k32 = ctypes.WinDLL('kernel32', use_last_error=True)
+        k32.CreateEventW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.BOOL, wintypes.LPCWSTR]
+        k32.CreateEventW.restype = wintypes.HANDLE
+        k32.SetEvent.argtypes = [wintypes.HANDLE]
+        k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        k32.OpenProcess.restype = wintypes.HANDLE
+        k32.WaitForMultipleObjects.argtypes = [wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE), wintypes.BOOL,
+                                               wintypes.DWORD]
+        k32.WaitForMultipleObjects.restype = wintypes.DWORD
+        k32.CloseHandle.argtypes = [wintypes.HANDLE]
+        _DLLS['kernel32'] = k32
+    return _DLLS['kernel32']
+
+
+def claim_instance(name: str) -> tuple:
+    """(handle, already). The handle is the named event that says "her window is open" for as long as this process
+    holds it. already is True when another window of this OpenAmika holds it (the handle is None: leave). When
+    Windows refuses the event for any other reason the window opens all the same, unseen by the web UI's button."""
+    k32 = _kernel32()
+    ctypes.set_last_error(0)
+    handle = k32.CreateEventW(None, True, False, name)              # manual reset, not set
+    error = ctypes.get_last_error()
+    if handle and error == ERROR_ALREADY_EXISTS:
+        k32.CloseHandle(handle)
+        return None, True
+    if not handle:
+        return None, error == ERROR_ACCESS_DENIED                   # held by a window started as administrator
+    return handle, False
+
+
+def page_alive(name: str):
+    """The second event, "<name>-ready": her page in this window is alive. Returns its handle (None: refused)."""
+    return _kernel32().CreateEventW(None, True, True, name + READY) or None
+
+
+def close_when(window, event, pid=None, closing=None) -> None:
+    """Close the window when `event` is set (the web UI's "Bring her back here") or when the process `pid` ends (the
+    server that opened this window has stopped: she goes with it). A daemon thread does the waiting; `closing`
+    (a threading.Event) tells it that the window is on its way out by itself."""
+    from ctypes import wintypes
+    k32 = _kernel32()
+    handles = [event] if event else []
+    process = k32.OpenProcess(SYNCHRONIZE, False, int(pid)) if pid else None
+    if process:
+        handles.append(process)
+    if not handles:
+        return
+
+    def watch():
+        array = (wintypes.HANDLE * len(handles))(*handles)
+        result = k32.WaitForMultipleObjects(len(handles), array, False, INFINITE)
+        if result >= len(handles) or (closing is not None and closing.is_set()):
+            return                               # the wait failed, or the window is closing already
+        try:
+            window.destroy()
+        except Exception as error:
+            print(f'pet: could not close the window ({type(error).__name__}: {error})', file=sys.stderr)
+
+    threading.Thread(target=watch, name='pet-close', daemon=True).start()
+
+
+def release(handles) -> None:
+    """The window has gone: drop its events at once, so "her window is open" is false before anyone looks again (the
+    browser page that "full page" opens asks right away). Setting each first wakes close_when's thread."""
+    k32 = _kernel32()
+    for handle in handles:
+        if handle:
+            k32.SetEvent(handle)
+            k32.CloseHandle(handle)
+
+
 def _system_scale() -> float:
     try:
         return _dll('user32').GetDpiForSystem() / 96
@@ -223,14 +319,32 @@ def see_through(form) -> None:
 
 
 class PetApi:
-    """What her page may ask of its window (window.pywebview.api in ui/use.js): zoom, full_page, close.
+    """What her page may ask of its window (window.pywebview.api in ui/use.js): zoom, full_page, close, handover.
     pywebview exposes the public methods only; the window and its handle are filled in when it exists."""
 
-    def __init__(self, base: str):
+    def __init__(self, base: str, power: bool = False, mic: bool = False, on_ready=None):
         self._base = base
         self._window = None
         self._hwnd = None
         self._open_page = False
+        self._handover = {'power': bool(power), 'mic': bool(mic)}
+        self._on_ready = on_ready
+        self._lock = threading.Lock()
+
+    def handover(self):
+        """What the page that sent her here had on: {'power': bool, 'mic': bool}. Her page in this window asks when
+        it is ready and switches the same on. Only the first call gets it: a reload of the page gets both False, so
+        she does not come on by herself a second time. The first call also tells main() that her page is alive
+        (on_ready)."""
+        with self._lock:
+            state, self._handover = self._handover, {'power': False, 'mic': False}
+            on_ready, self._on_ready = self._on_ready, None
+        if on_ready is not None:
+            try:
+                on_ready()
+            except Exception as error:
+                print(f'pet: {type(error).__name__}: {error}', file=sys.stderr)
+        return state
 
     def zoom(self, factor):
         """Make the window bigger or smaller around her feet, within her screen's work area."""
@@ -300,6 +414,9 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     ap.add_argument('--url', help='the web UI address (default: http://localhost:<settings.json chat_port>)')
     ap.add_argument('--debug', action='store_true', help="pywebview's debug mode: developer tools, context menu")
+    ap.add_argument('--power', action='store_true', help='she was on in the page that sent her here: switch her on')
+    ap.add_argument('--mic', action='store_true', help='the microphone was on there too: switch it on as well')
+    ap.add_argument('--close-with', type=int, metavar='PID', help='close the window when this process ends')
     args = ap.parse_args(argv)
     if os.name != 'nt':
         print('Her desktop pet window is Windows-only for now: open the page in your browser instead.', file=sys.stderr)
@@ -321,9 +438,15 @@ def main(argv=None) -> int:
         print('Her desktop pet window needs the Microsoft Edge WebView2 Runtime (part of Windows 11; for Windows 10: '
               'https://developer.microsoft.com/microsoft-edge/webview2/).', file=sys.stderr)
         return 2
+    name = instance_name()
+    held, already = claim_instance(name)
+    if already:
+        print('Her desktop pet window is already open.', file=sys.stderr)
+        return 0
+    handles, closing = [held], threading.Event()
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     geo = placed(load_geometry(GEOMETRY))
-    api = PetApi(base)
+    api = PetApi(base, power=args.power, mic=args.mic, on_ready=lambda: handles.append(page_alive(name)))
     window = webview.create_window(TITLE, pet_url(base), js_api=api, x=geo['x'], y=geo['y'], width=geo['width'],
                                    height=geo['height'], frameless=True, transparent=True, on_top=True, easy_drag=False,
                                    shadow=False, min_size=MIN_SIZE, background_color='#000000', text_select=False,
@@ -334,11 +457,15 @@ def main(argv=None) -> int:
     window.events.moved += saver.moved
     window.events.resized += saver.resized
     window.events.closing += saver.flush
+    close_when(window, held, args.close_with, closing)
     try:
         webview.start(private_mode=False, storage_path=str(PROFILE), debug=args.debug)
     except Exception as error:
         print(f'Her desktop pet window could not open: {type(error).__name__}: {error}', file=sys.stderr)
         return 1
+    finally:
+        closing.set()
+        release(handles)                 # before the browser page below opens: it asks "is her window open?"
     saver.flush()
     if api._open_page:
         webbrowser.open(base + '/use')

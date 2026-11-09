@@ -510,6 +510,8 @@ select option, select optgroup { background: #241627; color: var(--pearl); }
   box-shadow: 0 0 10px rgba(255, 141, 157, .25);
 }
 .stage-topbar .btn.icon.on { background: rgba(216, 180, 226, .3); border-color: rgba(216, 180, 226, .6); color: #fff; }   /* its panel is open */
+.stage-topbar .btn.icon.text { gap: 6px; }               /* an icon with its word: "Desktop pet" */
+@media (max-width: 640px) { .stage-topbar .btn.icon.text span { display: none; } }
 .stage-panel {
   position: absolute; top: 48px; right: 10px; z-index: 6; min-width: 240px;
   display: flex; flex-direction: column; gap: 10px; padding: 14px;
@@ -519,12 +521,28 @@ select option, select optgroup { background: #241627; color: var(--pearl); }
 .stage-panel .row { display: flex; align-items: center; gap: 10px; font-size: 12.5px; color: var(--muted); }
 .stage-panel .row input[type="range"] { flex: 1; accent-color: var(--lavender); }
 .stage-panel .editorial-link { font-size: 12.5px; }
+.stage-panel.pet-setup { max-width: 300px; }
+.pet-setup .title { font-weight: 700; color: var(--pearl); }
+.pet-setup .note { font-size: 12.5px; line-height: 1.5; color: var(--muted); }
+.pet-setup .note.faint { color: var(--faint); }
+.pet-setup .note code { overflow-wrap: anywhere; }
 .stage-empty {
   position: absolute; inset: 0; display: flex; flex-direction: column;
   align-items: center; justify-content: center; gap: 12px; text-align: center;
   color: var(--faint); padding: 30px;
 }
 .stage-empty .big { font-family: var(--font-character); font-size: 26px; color: var(--muted); }
+/* she is in her desktop pet window (the Use page's "Desktop pet" button): the stage rests, this note is in her place */
+.pet-away-note {
+  position: absolute; inset: 0; z-index: 5; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 14px; text-align: center;
+  color: var(--muted); padding: 30px; line-height: 1.6; cursor: default;
+  background: rgba(20, 9, 26, .78);        /* --deep, so the note reads over any background photo */
+}
+.pet-away-note .big { font-family: var(--font-character); font-size: 26px; color: var(--pearl); }
+.stage-area.pet-away canvas, .stage-area.pet-away .bubble, .stage-area.pet-away .stage-hud,
+.stage-area.pet-away .stage-empty, .stage-area.pet-away .stage-topbar, .stage-area.pet-away .stage-panel,
+.stage-area.pet-away .cam-pip { visibility: hidden; }
 .stage-hud {
   position: absolute; left: 0; right: 0; bottom: 0; padding: 14px 18px 12px;
   background: linear-gradient(to top, rgba(20, 9, 26, .88), transparent);
@@ -595,7 +613,7 @@ html.pet body::before { display: none; }                   /* the film grain wou
 html.pet .oa-main { display: none; }
 html.pet .stage-area { position: fixed; inset: 0; width: auto; height: auto; background: transparent; }
 html.pet .stage-bg, html.pet .stage-topbar, html.pet .stage-panel, html.pet .stage-hud, html.pet .bubble,
-html.pet .cam-pip, html.pet .fs-bar { display: none !important; }
+html.pet .cam-pip, html.pet .fs-bar, html.pet .pet-away-note { display: none !important; }
 html.pet .stage-empty { inset: 10px; padding: 18px; border-radius: 16px; background: rgba(20, 9, 26, .9); }
 .pet-bar { display: none; }
 html.pet .pet-bar {

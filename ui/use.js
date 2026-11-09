@@ -219,7 +219,7 @@
     try { localStorage.setItem("openamika-scene-panel", open ? "open" : "closed"); } catch (_) {}
   });
   // clicks/drags inside the controls must not grab or zoom the model
-  for (const box of [$("scenePanel"), document.querySelector(".stage-topbar")]) {
+  for (const box of [$("scenePanel"), $("petSetup"), $("petAway"), document.querySelector(".stage-topbar")]) {
     for (const evt of ["mousedown", "touchstart", "wheel"]) {
       box.addEventListener(evt, (e) => e.stopPropagation(), { passive: evt !== "wheel" });
     }
@@ -392,6 +392,9 @@
   // ── power / socket ──
   let ws = null, wsWanted = false, reconnectTimer = null;
   let micActive = false, micStream = null, micCtx = null, micSrc = null, micNode = null;
+  // she is out in her desktop pet window (the "Desktop pet" button, below): this page rests until she is back
+  let petOut = false;
+  const offHint = () => (petOut ? "she is on your desktop" : "press power to connect");
   // current turn's id; audio tagged for another turn is dropped (classic-console guard)
   let ttsTurnBase = "";
 
@@ -411,13 +414,15 @@
   setPowerUI("Offline", "press power to connect");
 
   function wsURL() {
-    return (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws/dialog";
+    // ?pet=1 tells the server that her desktop window holds the session (a browser tab then shows "on your desktop")
+    return (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws/dialog" + (PET ? "?pet=1" : "");
   }
 
   function connect() {
     wsWanted = true;
     setPowerUI("Connecting", "opening dialog socket…");
-    ws = new WebSocket(wsURL());
+    const socket = new WebSocket(wsURL());
+    ws = socket;
     ws.binaryType = "arraybuffer";
     ws.onopen = () => {
       setPowerUI("Online", "connected · " + (micActive ? "mic live" : "text & mic ready"));
@@ -425,6 +430,7 @@
       pollStatus();
     };
     ws.onclose = () => {
+      if (ws && ws !== socket) return;             // a newer socket is live (off, then on again at once): not its end
       ws = null;
       stopMic(true);
       avatar.flush();
@@ -433,7 +439,7 @@
         setPowerUI("Connecting", "reconnecting…");
         reconnectTimer = setTimeout(connect, 2500);
       } else {
-        setPowerUI("Offline", "press power to connect");
+        setPowerUI("Offline", offHint());
       }
     };
     ws.onerror = () => {};
@@ -451,10 +457,13 @@
     stopMic(true);
     if (ws) { try { ws.close(); } catch (_) {} ws = null; }
     avatar.flush();
-    setPowerUI("Offline", "press power to connect");
+    setPowerUI("Offline", offHint());
   }
 
-  $("powerBtn").addEventListener("click", () => (wsWanted ? disconnect() : connect()));
+  $("powerBtn").addEventListener("click", () => {
+    if (petBlocked()) return;
+    if (wsWanted) disconnect(); else connect();
+  });
 
   // ── mic (AudioWorklet pcm-pusher, ported from the classic console) ──
   function workletURL() {
@@ -545,11 +554,176 @@ registerProcessor('pcm-pusher', PCMPusher);`;
     $("micBtn").classList.remove("live");
   }
 
-  $("micBtn").addEventListener("click", () => (micActive ? stopMic() : startMic()));
+  $("micBtn").addEventListener("click", () => {
+    if (petBlocked()) return;
+    if (micActive) stopMic(); else startMic();
+  });
+
+  // ── her desktop pet window, from this page: the "Desktop pet" button ──
+  // GET /api/pet says whether this browser is on the PC she runs on (only there does the button show), whether her
+  // window is open, and whether its one package is installed. Her dialog session is one at a time, so this page
+  // closes its own socket first; her window then switches on what was on here (power, microphone). While she is out
+  // the stage rests ("Amika is on your desktop"), and "Bring her back here" closes her window again.
+  let petInfo = null, petTimer = null, petMisses = 0, petSeen = 0, petWorking = false, petMoving = false;
+  const petHere = () => !!(petInfo && petInfo.supported && petInfo.local);
+
+  function petBlocked() {
+    if (petMoving) { toast("She is on her way to your desktop. One moment."); return true; }
+    if (!petOut) return false;
+    toast("She is on your desktop now. Press “Bring her back here” first.");
+    return true;
+  }
+
+  function showPetSetup(open) {
+    if (open) showScenePanel(false);               // the two popovers share one corner
+    $("petSetup").hidden = !open;
+  }
+
+  function setPetOut(out) {
+    if (petOut === out) return;
+    petOut = out;
+    stageArea.classList.toggle("pet-away", out);
+    $("petAway").hidden = !out;
+    $("petBtn").hidden = out || !petHere();
+    if (avatar.setPaused) avatar.setPaused(out);   // nothing of her is drawn here meanwhile
+    clearInterval(petTimer);
+    petTimer = null;
+    if (out) {
+      petMisses = 0;
+      showPetSetup(false);
+      if (camActive) camStop(true);                // her eyes do not stay on behind the note
+      petTimer = setInterval(() => refreshPet(true), 2500);     // her window can also close by itself
+    }
+    if (!wsWanted) setPowerUI("Offline", offHint());
+  }
+
+  function applyPet(info) {
+    petInfo = info;
+    if (!petHere() || !info.running) setPetOut(false);
+    else if (!wsWanted && !petWorking) setPetOut(true);
+    $("petBtn").hidden = petOut || !petHere();
+  }
+
+  async function refreshPet(force) {
+    if (PET) return null;
+    if (!force && Date.now() - petSeen < 2000) return petInfo;
+    petSeen = Date.now();
+    let info = null;
+    try { info = await getJSON("/api/pet"); } catch (_) {}
+    if (!info) {
+      if (petOut && ++petMisses >= 3) setPetOut(false);         // the server has gone: nothing keeps her out there
+      return null;
+    }
+    petMisses = 0;
+    applyPet(info);
+    return info;
+  }
+
+  // this page lets go of her session, her window opens and takes it over; when the window does not come she is back
+  // here as she was
+  async function sendToDesktop() {
+    const wasOn = wsWanted, wasMic = micActive;
+    showPetSetup(false);
+    if (document.fullscreenElement) { try { await document.exitFullscreen(); } catch (_) {} }
+    petMoving = true;                              // power and the microphone wait here until she has arrived or not
+    disconnect();
+    setPowerUI("Offline", "opening her desktop window…");
+    let result = null, failure = "";
+    try { result = await postAction("/api/pet/open", "open-pet", { power: wasOn, mic: wasMic }); }
+    catch (error) { failure = error.message; }
+    petMoving = false;
+    if (result && result.ok) {
+      if (petInfo) petInfo.running = true;
+      setPetOut(true);
+      return;
+    }
+    if (result && result.code === "not_installed") showPetSetup(true);
+    else toast(failure || (result && result.reason) || "Her desktop window could not open.", true);
+    setPowerUI("Offline", offHint());
+    if (wasOn) { connect(); if (wasMic) startMic(); }
+  }
+
+  $("petBtn").addEventListener("click", async () => {
+    if (petWorking || petOut) return;
+    petWorking = true;
+    $("petBtn").disabled = true;
+    try {
+      const info = await refreshPet(true);
+      if (!info || !petHere()) toast("Her desktop window is not available right now.", true);
+      else if (!info.installed) showPetSetup($("petSetup").hidden);      // a second click closes the popover again
+      else await sendToDesktop();
+    } finally {
+      petWorking = false;
+      $("petBtn").disabled = false;
+    }
+  });
+  $("sceneBtn").addEventListener("click", () => showPetSetup(false));
+  $("petInstallNo").addEventListener("click", () => showPetSetup(false));
+  $("petInstallBtn").addEventListener("click", async () => {
+    if (petWorking) return;
+    petWorking = true;
+    const button = $("petInstallBtn"), label = button.textContent;
+    button.disabled = true;
+    button.textContent = "Installing…";
+    try {
+      let result = null, failure = "";
+      try { result = await postAction("/api/pet/install", "install-pet", {}); }
+      catch (error) { failure = error.message; }
+      if (result && result.ok) await sendToDesktop();
+      else toast(failure || (result && result.reason) || "The install did not work.", true);
+    } finally {
+      button.disabled = false;
+      button.textContent = label;
+      petWorking = false;
+    }
+  });
+
+  $("petBackBtn").addEventListener("click", async () => {
+    if (petWorking) return;
+    petWorking = true;
+    avatar.ensureAudio();                          // inside the click: her voice may start here again
+    $("petBackBtn").disabled = true;
+    let result = null, failure = "";
+    try { result = await postAction("/api/pet/close", "close-pet", {}); }
+    catch (error) { failure = error.message; }
+    $("petBackBtn").disabled = false;
+    petWorking = false;
+    if (!result || !result.ok) {
+      toast(failure || (result && result.reason) || "Her window could not be closed.", true);
+      return;
+    }
+    if (petInfo) petInfo.running = false;
+    setPetOut(false);
+    if (result.had_session) connect();             // she was on out there: she is on here again
+  });
+
+  if (!PET) {
+    refreshPet(true);
+    document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshPet(false); });
+    window.addEventListener("focus", () => refreshPet(false));
+  }
+
+  // In her desktop window: take over what the page that sent her here had on. pet.py hands it over once, when its
+  // bridge to this page is ready (PetApi.handover). An answer that comes back through that bridge counts as a click
+  // for the browser, so her voice starts without one.
+  if (PET) {
+    const takeOver = async () => {
+      let state = null;
+      try { state = await window.pywebview.api.handover(); } catch (_) {}
+      if (!state) return;
+      if (state.power || state.mic) avatar.ensureAudio();
+      if (state.power && !wsWanted) connect();
+      if (state.mic) startMic();
+    };
+    const bridge = window.pywebview && window.pywebview.api;
+    if (bridge && typeof bridge.handover === "function") takeOver();
+    else window.addEventListener("pywebviewready", takeOver, { once: true });
+  }
 
   // ── outgoing text / controls ──
   $("sayForm").addEventListener("submit", (event) => {
     event.preventDefault();
+    if (petBlocked()) return;
     const text = $("sayInput").value.trim();
     if (!text || !ws || ws.readyState !== 1) return;
     ws.send(JSON.stringify({ type: "text", text }));
@@ -676,6 +850,13 @@ registerProcessor('pcm-pusher', PCMPusher);`;
         break;
       case "ai_error":
         resetEmote();
+        // her desktop window holds her session: show "Amika is on your desktop", not a reconnect loop of errors
+        // (on another device the stage has no such note: there the line below is all there is)
+        if (msg.code === "pet_session" && !PET) {
+          disconnect();
+          refreshPet(true).then(() => { if (!petOut) toast(msg.message || "Amika is in her desktop window now.", true); });
+          break;
+        }
         // the provider's own first line ("OpenRouter (HTTP 402): Insufficient credits … — OpenRouter is prepaid: …")
         // stays in the chat log, where her reply would have been; the toast only points at it
         chatAdd("sys", "Error", msg.message || "She hit an error.");

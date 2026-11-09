@@ -38,6 +38,7 @@ from tts_sfx import parse_sfx_delta, resolve_sfx, list_files as sfx_list_files
 from tts_pause import pause_after
 from tts_text import voice_text
 import voice_adapter
+import pet_window
 from silero_vad import load_silero_vad
 
 import sys
@@ -4515,21 +4516,29 @@ class DialogSession:
 
 # Original Hane history and VAD are global: one companion session at a time.
 _dialog_active = False
+_dialog_owner = None       # who holds it: "pet" (her desktop window: /ws/dialog?pet=1) or "page" (a browser tab)
 
 
 @app.websocket("/ws/dialog")
 async def ws_dialog(ws: WebSocket):
-    global _dialog_active
+    global _dialog_active, _dialog_owner
     await ws.accept()
     if _wipe_in_progress:
         await ws.send_json({"type": "ai_error", "message": "A service control is in progress. Reconnect when it finishes."})
         await ws.close(code=1008)
         return
+    from_pet = bool(ws.query_params.get("pet"))
     if _dialog_active:
-        await ws.send_json({"type": "ai_error", "message": "OpenAmika is open in another tab. Disconnect it first."})
+        if _dialog_owner == "pet" and not from_pet:
+            # the code tells the Use page to show "Amika is on your desktop" in place of a reconnect loop
+            await ws.send_json({"type": "ai_error", "code": "pet_session",
+                                "message": "Amika is in her desktop window now. Press “Bring her back here” on the "
+                                           "Use page, or close her window, first."})
+        else:
+            await ws.send_json({"type": "ai_error", "message": "OpenAmika is open in another tab. Disconnect it first."})
         await ws.close(code=1008)
         return
-    _dialog_active = True
+    _dialog_active, _dialog_owner = True, "pet" if from_pet else "page"
     session = None
     try:
         session = DialogSession(ws)
@@ -4611,7 +4620,124 @@ async def ws_dialog(ws: WebSocket):
             session._committed_turn_id = None
             await session.hane.disconnect()
             await session.tts.disconnect()
-        _dialog_active = False
+        _dialog_active, _dialog_owner = False, None
+
+
+# ── her desktop pet window, from the Use page ("Desktop pet", "Bring her back here") ─────────────────────────────
+# pet_window.py does the work: the window's process, its two Windows events, the one small install. The window opens
+# on the desktop of the PC that runs OpenAmika, so these routes answer that PC only (pet_window.is_local): a phone on
+# the Tailscale address, a tunnel, or a web page that points a name of its own at 127.0.0.1 gets no button and a 403.
+# What can go wrong for the owner (not installed, the window closed again) answers 200 with {ok: false, code, reason}.
+_pet_busy = False
+_PET_BUSY = {"ok": False, "code": "busy", "reason": "A service control is in progress. Try again in a moment."}
+
+
+def _pet_guard(request, action):
+    client = getattr(request, "client", None)
+    if not pet_window.is_local(getattr(client, "host", None), request.headers):
+        raise HTTPException(status_code=403, detail="Her desktop window can only be opened from this PC itself.")
+    expected_origin = f"{request.url.scheme}://{request.url.netloc}"
+    if request.headers.get("origin") != expected_origin or request.headers.get("x-build-f-action") != action:
+        raise HTTPException(status_code=403, detail="Use the OpenAmika page for this action.")
+    if request.headers.get("content-type", "").split(";", 1)[0].strip().lower() != "application/json":
+        raise HTTPException(status_code=415, detail="JSON is required.")
+
+
+async def _pet_json(request):
+    body = await request.body()
+    if len(body) > 1024:
+        raise HTTPException(status_code=400, detail="Control request is too large.")
+    try:
+        payload = json.loads(body or b"{}")
+    except (ValueError, UnicodeError):
+        raise HTTPException(status_code=400, detail="Invalid JSON.") from None
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="A JSON object is required.")
+    return payload
+
+
+async def _pet_session_gone(seconds):
+    """Wait (at most `seconds`) for the dialog session to end: a socket that closes takes a moment to let her go."""
+    for _ in range(int(seconds * 10)):
+        if not _dialog_active:
+            return
+        await asyncio.sleep(0.1)
+
+
+@app.get("/api/pet")
+async def pet_state(request: Request):
+    """What the Use page's "Desktop pet" button needs. session: who holds her dialog session now ("pet", "page")."""
+    client = getattr(request, "client", None)
+    local = pet_window.is_local(getattr(client, "host", None), request.headers)
+    if os.name != "nt" or not local:
+        return {"supported": os.name == "nt", "local": local}
+    return {"supported": True, "local": True, "running": pet_window.running(),
+            "installed": await asyncio.to_thread(pet_window.has_pywebview, pet_window.pet_python()),
+            "session": _dialog_owner if _dialog_active else None}
+
+
+@app.post("/api/pet/open")
+async def pet_open(request: Request):
+    """Open her desktop window. Body {power, mic}: what the page had on. The page has closed its own dialog socket
+    first; her window switches the same on (pet.py --power --mic), so she goes on talking there."""
+    global _pet_busy
+    _pet_guard(request, "open-pet")
+    payload = await _pet_json(request)
+    power, mic = payload.get("power") is True, payload.get("mic") is True
+    if _pet_busy or _wipe_in_progress:
+        return dict(_PET_BUSY)
+    _pet_busy = True
+    try:
+        if power:
+            await _pet_session_gone(3)                   # the page's socket is on its way out
+        if pet_window.running():
+            if not power:
+                return {"ok": True, "already": True}
+            # a window is open already and does not hold her session: a new one takes the session over
+            closed = await asyncio.to_thread(pet_window.close)
+            if not closed.get("ok"):
+                return {"ok": False, "code": "failed", "reason": closed.get("reason") or "Her window did not close."}
+            await _pet_session_gone(4)
+        # her own address from the launcher, never the request's Host header
+        base = os.getenv("AMIKA_CHAT_URL") or f"http://localhost:{os.getenv('YUMEHA_PORT', '53000')}"
+        return await asyncio.to_thread(pet_window.start, base, power=power, mic=mic)
+    finally:
+        _pet_busy = False
+
+
+@app.post("/api/pet/close")
+async def pet_close(request: Request):
+    """"Bring her back here": close her desktop window. had_session says her session was on in the window (the page
+    switches it on again in the tab); the answer comes when that session has ended."""
+    global _pet_busy
+    _pet_guard(request, "close-pet")
+    await _pet_json(request)
+    if _pet_busy or _wipe_in_progress:
+        return dict(_PET_BUSY)
+    _pet_busy = True
+    try:
+        had_session = bool(_dialog_active and _dialog_owner == "pet")
+        result = await asyncio.to_thread(pet_window.close)
+        if result.get("ok") and had_session:
+            await _pet_session_gone(4)
+        return {**result, "had_session": had_session}
+    finally:
+        _pet_busy = False
+
+
+@app.post("/api/pet/install")
+async def pet_install(request: Request):
+    """The one small install her desktop window needs: pywebview, into the Python that opens the window."""
+    global _pet_busy
+    _pet_guard(request, "install-pet")
+    await _pet_json(request)
+    if _pet_busy:
+        return dict(_PET_BUSY)
+    _pet_busy = True
+    try:
+        return await asyncio.to_thread(pet_window.install)
+    finally:
+        _pet_busy = False
 
 
 if __name__ == "__main__":

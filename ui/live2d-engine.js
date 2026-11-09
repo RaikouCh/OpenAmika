@@ -34,6 +34,7 @@
 
   // ── state ──
   let pixiApp = null;
+  let renderPaused = false;        // setPaused(): nothing of her is drawn (she is in her desktop pet window)
   let live2dModel = null;
   let modelStates = {};          // id -> {model, motionAssets, expressionAssets, idleMotionBank, emotionBanks, config, originalWidth, originalHeight}
   let registry = [];             // /api/avatar/models payload
@@ -94,6 +95,7 @@
     });
     pixiApp.ticker.maxFPS = 0;
     pixiApp.ticker.add(agentTick);
+    if (renderPaused) pixiApp.ticker.stop();
     return pixiApp;
   }
 
@@ -185,7 +187,7 @@
     currentEmotion = null; activeExpressions = new Set();
     if (!live2dModel.parent) pixiApp.stage.addChild(live2dModel);
     repositionModel(state);
-    if (pixiApp.ticker) pixiApp.ticker.start();
+    if (pixiApp.ticker && !renderPaused) pixiApp.ticker.start();
     startIdleLoop();
     currentId = opt.id;
     safeSet("openamika-avatar-model", opt.id);
@@ -652,6 +654,15 @@
     portrait = { canvas, tick };
     return true;
   }
+  // Stop or start drawing her. The Use page pauses while she is out in her desktop pet window: the canvas is hidden
+  // then, and two copies of her would be drawn for nothing. A model that loads meanwhile stays still until false.
+  function setPaused(on) {
+    renderPaused = !!on;
+    if (!pixiApp || !pixiApp.ticker) return;
+    if (renderPaused) pixiApp.ticker.stop();
+    else pixiApp.ticker.start();
+  }
+
   // The browser only lets audio start after a click: resolve true once the context runs (a 300 ms wait so
   // a call made outside a gesture does not hang on resume()).
   async function ensureAudio() {
@@ -1260,7 +1271,7 @@
     },
 
     playChunk, playBuffer, flush, surfaceEmotion, outputLevel, notifyResize,
-    attachPortrait, detachPortrait, ensureAudio,
+    attachPortrait, detachPortrait, ensureAudio, setPaused,
     setBusy, setOverlay, setOverlayMotion, loadAgent, setAgentVisible, setAgentBase, setAgentState, converse, anchors,
     previewEmotion(key) { handleEmotionChange(key); },
     setVolume(v) {

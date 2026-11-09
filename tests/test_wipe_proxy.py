@@ -87,6 +87,7 @@ class Socket:
     def __init__(self):
         self.closed = False
         self.messages = []
+        self.query_params = {}                     # /ws/dialog?pet=1 is her desktop pet window
 
     async def accept(self):
         pass
@@ -148,6 +149,7 @@ class WipeProxyTests(unittest.IsolatedAsyncioTestCase):
         self.ns = {'asyncio': asyncio, 'json': json, 'aiohttp': self.http, 'Request': Request,
                    'HTTPException': HTTPException, 'WebSocket': Socket, '_dialog_sessions': set(),
                    '_wipe_in_progress': False, '_dialog_active': False, 'HANE_URL': 'http://127.0.0.1:5201',
+                   '_dialog_owner': None,                      # who holds her session: "pet" or "page"
                    'vision_note_her_speech': lambda s: None}   # vision hook in the audio receipt path
         self.tree = ast.parse(SOURCE.read_text(encoding='utf-8'))
         wanted = {'_build_f_session_busy', '_retire_wiped_sessions', 'build_f_wipe', 'ws_dialog',

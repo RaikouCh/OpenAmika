@@ -30,9 +30,22 @@
           <div class="big">No Live2D model yet</div>
           <div>Her model comes with her voice: run<br><code>envs\brain\Scripts\python.exe scripts\setup_tts.py</code><br>(README, “Set her up”), then reload this page.<br>Any other Cubism model works too: put its folder in <code>avatar/models/</code>.</div>
         </div>
+        <!-- she is in her desktop pet window (the "Desktop pet" button below): the stage here rests until she is back -->
+        <div class="pet-away-note" id="petAway" hidden>
+          <div class="big">Amika is on your desktop</div>
+          <div>She is in her own small window now, on top of your other windows.<br>Hover her to find power, the microphone and close.</div>
+          <button class="btn primary" id="petBackBtn" type="button">Bring her back here</button>
+        </div>
         <div class="stage-topbar">
           <select id="modelSelect" title="Live2D model" hidden></select>
           <button class="btn small" id="resetViewBtn" title="Reset position & zoom" hidden>Re-center</button>
+          <!-- shown on the PC that runs OpenAmika only (GET /api/pet): the window opens on that PC's desktop -->
+          <button class="btn small icon text" id="petBtn" title="Desktop pet — put her on your desktop, in her own small window" aria-label="Desktop pet" hidden>
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <rect x="2" y="4" width="20" height="16" rx="2"/><rect x="12" y="11" width="7" height="6" rx="1" fill="currentColor"/>
+            </svg>
+            <span>Desktop pet</span>
+          </button>
           <button class="btn small icon" id="camBtn" title="Camera — let her see you" aria-label="Camera">
             <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="m16 10 6-3v10l-6-3"/><rect x="2" y="6" width="14" height="12" rx="2"/>
@@ -60,6 +73,16 @@
             <span id="bgBlurVal" class="mono">12px</span>
           </div>
           <button class="editorial-link" id="bgRemove" hidden>Remove background →</button>
+        </div>
+        <!-- the "Desktop pet" button, when her window's one package (pywebview) is not installed yet -->
+        <div class="stage-panel pet-setup" id="petSetup" hidden>
+          <div class="title">One small install first</div>
+          <div class="note">Her desktop window needs pywebview (a few megabytes). It goes into her brain environment; nothing else changes.</div>
+          <div class="row">
+            <button class="btn small primary" id="petInstallBtn" type="button">Install and open</button>
+            <button class="btn small" id="petInstallNo" type="button">Not now</button>
+          </div>
+          <div class="note faint">Or by hand, from her folder:<br><code>envs\brain\Scripts\python.exe -m pip install -r brain\requirements-pet.txt</code></div>
         </div>
         <div class="stage-hud">
           <div class="say" id="hudSay"></div>
