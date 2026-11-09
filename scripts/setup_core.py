@@ -11,6 +11,12 @@ scripts/setup_tts.py. Windows runs this through scripts/setup_windows.ps1, which
     ... --vision on|off  her eyes (the camera): auto (default) installs them when the GPU has 16 GB or more
     ... --check          report what is installed and what is missing; change nothing
     ... --reinstall      run every pip step again
+    ... --no-token-prompt  do not ask for a Hugging Face token
+
+First it asks for an optional Hugging Face token (Enter skips; https://huggingface.co/settings/tokens makes a free
+one): without one Hugging Face throttles the model downloads, with one they run at full speed. A token pasted there is
+kept where `hf auth login` keeps it (HF_TOKEN_PATH, else "token" in HF_HOME, by default ~/.cache/huggingface), so the
+next runs and scripts/setup_tts.py use it too; one already set (HF_TOKEN, or a saved login) is used without asking.
 
 What it makes, all inside this folder and all git-ignored:
 
@@ -30,21 +36,33 @@ Every step prints what it does; the summary at the end has one row per part (OK,
 failed, each with its fix) and the exit code is 1 if any row is !! (130 after Ctrl-C). Running it again is the fix
 for almost everything: what is installed and working is checked and skipped (pip runs again only when a requirements
 file changed, or with --reinstall; a package that is installed but no longer imports is installed again), and the
-downloads resume. An environment folder made with `conda create -p envs\\<name>` (the earlier README) is used as it
-is. Only the standard library is needed to run this; it shares its download, venv and summary helpers with
-setup_tts.py.
+downloads resume (the big weight files of the two Hugging Face models are fetched here first, through a .part file
+that a re-run continues, with the speed and the size left on screen). An environment folder made with
+`conda create -p envs\\<name>` (the earlier README) is used as it is. Python 3.11 is the tested one; 3.12 works too
+(every pinned package has wheels for it). 3.13 and newer cannot run her voice server: it pins numpy 1.26.4
+(GPT-SoVITS needs numpy<2), which has no wheels for them. Only the standard library is needed to run this; it shares
+its download, venv and summary helpers with setup_tts.py.
+
+The window it runs in matters for the commands after it, which are relative to this folder: the summary prints the
+exact `cd` line when that window is elsewhere (the outer folder of GitHub's ZIP, OpenAmika-main\\OpenAmika-main, for
+one) and says so when it is Git Bash, whose paths are not Windows paths.
 """
 from __future__ import annotations
 
 import argparse
+import getpass
 import hashlib
+import http.client
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Optional
 
@@ -71,6 +89,14 @@ VLM_SERVICE = Path(__file__).resolve().parent.parent / "vision" / "vlm_service.p
 SETTINGS_ENVS = {"brain_python": ("brain", "brain"), "speech_python": ("speech", "speech recognition"),
                  "embedder.python": ("embed", "memory (embedder)"), "vision.python": ("vision", "vision (her eyes)")}
 TORCH_DISTS = ("torch", "torchaudio", "torchvision")   # installed from the PyTorch index only (ensure_torch)
+HF_TOKEN_PAGE = "https://huggingface.co/settings/tokens"
+# GitHub's "Download ZIP" and the release zips unpack into a folder of that name inside a folder of that name:
+# OpenAmika-main\OpenAmika-main, OpenAmika-1.0.0\OpenAmika-1.0.0
+ZIP_FOLDER = re.compile(r"OpenAmika-(main|master|v?\d+(\.\d+)*[\w.+-]*)", re.IGNORECASE)
+PYTHON_NEEDED = ("OpenAmika needs Python 3.11 (3.12 works too): install 3.11 from "
+                 "https://www.python.org/downloads/release/python-3119/ (tick \"Add python.exe to PATH\"), open a new "
+                 "window and run this again. Python 3.13 and newer cannot run her voice server: it needs numpy 1.26.4 "
+                 "(GPT-SoVITS pins numpy<2), which has no wheels for them")
 
 # name, folder under envs/, requirements, torch packages, modules that must import
 ENV_SPECS = {
@@ -213,6 +239,154 @@ def digest(*files: Path) -> str:
     return h.hexdigest()
 
 
+def same_folder(a: Path, b: Path) -> bool:
+    try:
+        return os.path.normcase(str(a.resolve())) == os.path.normcase(str(b.resolve()))
+    except OSError:
+        return os.path.normcase(str(a)) == os.path.normcase(str(b))
+
+
+# ---- the window this runs in ------------------------------------------------------------------------------------
+def zip_outer(root: Path) -> Optional[Path]:
+    """The outer folder when root is the inner folder of an unpacked GitHub ZIP (...\\OpenAmika-main\\OpenAmika-main,
+    ...\\OpenAmika-1.0.0\\OpenAmika-1.0.0), else None."""
+    if ZIP_FOLDER.fullmatch(root.name) and root.parent.name.lower() == root.name.lower():
+        return root.parent
+    return None
+
+
+def caller_dir() -> Path:
+    """The folder of the window that started the setup: setup_windows.ps1 passes it in OPENAMIKA_CALLER_DIR (it
+    changes into this folder before it runs Python), else the current folder."""
+    given = os.environ.get("OPENAMIKA_CALLER_DIR", "").strip()
+    return Path(given) if given else Path.cwd()
+
+
+def caller_shell() -> str:
+    """'cmd', 'bash' (Git Bash / MSYS) or 'powershell' (the default): which form of cd the summary prints.
+    setup_windows.ps1 passes the name of the program that started it in OPENAMIKA_CALLER_SHELL."""
+    given = os.environ.get("OPENAMIKA_CALLER_SHELL", "").strip().lower()
+    if given.startswith("cmd"):
+        return "cmd"
+    if os.environ.get("MSYSTEM") or given in ("bash.exe", "sh.exe", "bash", "sh", "mintty.exe"):
+        return "bash"
+    return "powershell"
+
+
+def cd_command(root: Path, shell: str) -> str:
+    """The cd line that takes a window of that shell into root (cmd needs /d to change the drive as well)."""
+    if shell == "cmd":
+        return f'cd /d "{root}"'
+    if shell == "bash":
+        text = str(root).replace("\\", "/")
+        if len(text) > 1 and text[1] == ":":
+            text = "/" + text[0].lower() + text[2:]
+        return f'cd "{text}"'
+    return f'cd "{root}"'
+
+
+def folder_notes(root: Path, caller: Path, shell: str) -> tuple[list[str], str]:
+    """(notes, cd line) about the window that runs the setup. The next commands are relative to root, so a window
+    elsewhere (the outer folder of the ZIP, C:\\Windows\\System32, ...) gets the exact cd line; so does the inner
+    folder of a ZIP, a reminder of which of the two same-named folders is hers. Git Bash gets a note of its own: the
+    next commands are written for PowerShell (or cmd)."""
+    notes: list[str] = []
+    outer = zip_outer(root)
+    cd = ""
+    if not same_folder(caller, root):
+        cd = cd_command(root, shell)
+        if outer is not None and same_folder(caller, outer):
+            notes.append(f"Your window is in {outer}, the outer folder of the ZIP. OpenAmika is the folder of the same "
+                         f"name inside it: run {cd} before the next commands.")
+        else:
+            notes.append(f"Your window is in {caller}, not in the OpenAmika folder: run {cd} before the next commands.")
+    elif outer is not None:
+        cd = cd_command(root, shell)
+    if shell == "bash":
+        notes.append("This window is Git Bash: run the next commands in PowerShell instead (in the OpenAmika folder, "
+                     "right-click an empty spot and choose Open in Terminal).")
+    return notes, cd
+
+
+# ---- the Hugging Face token -------------------------------------------------------------------------------------
+def hf_token_file() -> Path:
+    """Where `hf auth login` keeps the token: HF_TOKEN_PATH, else "token" in HF_HOME (~/.cache/huggingface)."""
+    home = os.environ.get("HF_HOME") or os.path.join(os.path.expanduser("~"), ".cache", "huggingface")
+    return Path(os.environ.get("HF_TOKEN_PATH") or os.path.join(home, "token"))
+
+
+def console_input() -> bool:
+    """True when a person can answer in this window: stdin is a real console. A pipe, a file or the NUL device (an
+    agent's terminal often has one, and Windows calls it a tty) is not, so the question never hangs an unattended run."""
+    try:
+        if sys.stdin is None or not sys.stdin.isatty():
+            return False
+    except (AttributeError, ValueError, OSError):
+        return False
+    if not IS_WIN:
+        return True
+    try:
+        import ctypes
+        import msvcrt
+        mode = ctypes.c_uint32()
+        handle = msvcrt.get_osfhandle(sys.stdin.fileno())
+        return bool(ctypes.windll.kernel32.GetConsoleMode(handle, ctypes.byref(mode)))  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def check_hf_token(token: str) -> Optional[bool]:
+    """Does huggingface.co accept the token? True, False (HTTP 401/403), or None when it cannot be asked."""
+    req = urllib.request.Request("https://huggingface.co/api/whoami-v2",
+                                 headers={**base.UA, "Authorization": "Bearer " + token})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return r.status == 200
+    except urllib.error.HTTPError as e:
+        return False if e.code in (401, 403) else None
+    except (urllib.error.URLError, OSError, ValueError):
+        return None
+
+
+def ask_hf_token(args: argparse.Namespace, ask=None, check=None) -> tuple[str, str]:
+    """(mark, note) for the summary. A token already set (HF_TOKEN, or a saved `hf auth login`) is used as it is.
+    Otherwise, in a console, ask for one, optional (Enter skips). A pasted token is checked with huggingface.co, set
+    as HF_TOKEN for this run (the download steps inherit it) and saved where `hf auth login` saves it, for the next
+    runs and scripts/setup_tts.py. It is never printed (only its last four characters)."""
+    token, where = base.hf_token(None)
+    if token:
+        return "OK ", f"from {where}: the model downloads run at full speed"
+    if args.check or args.no_token_prompt or not console_input():
+        return "-- ", (f"none (optional: Hugging Face may throttle the downloads without one; make a free Read token at "
+                       f"{HF_TOKEN_PAGE} and set $env:HF_TOKEN = \"hf_...\" before the setup)")
+    print("\n[setup] Optional: a free Hugging Face token makes the model downloads much faster (without one,\n"
+          "        Hugging Face can slow them to about 50 KB/s). Make one at " + HF_TOKEN_PAGE + "\n"
+          "        (Create new token, type Read), copy it, paste it here (right-click or Ctrl+V: it stays hidden)\n"
+          "        and press Enter. Or just press Enter to go on without one.", flush=True)
+    try:
+        token = ((ask or getpass.getpass)("[setup] Hugging Face token (Enter skips): ") or "").strip()
+    except EOFError:
+        print(flush=True)
+        token = ""
+    if not token:
+        return "-- ", "skipped (the downloads may be slow; run this again with a token if they crawl)"
+    if not token.startswith("hf_") or len(token) < 20:
+        return "-- ", "that was not a Hugging Face token (they start with hf_): going on without one"
+    accepted = (check or check_hf_token)(token)
+    if accepted is False:
+        return "-- ", "Hugging Face did not accept that token (HTTP 401): going on without one"
+    os.environ["HF_TOKEN"] = token
+    saved = hf_token_file()
+    try:
+        saved.parent.mkdir(parents=True, exist_ok=True)
+        saved.write_text(token, encoding="utf-8")
+        kept = f"saved in {saved}, where `hf auth login` keeps it (delete that file to forget it)"
+    except OSError as e:
+        kept = f"used for this run only (it could not be saved in {saved}: {e})"
+    return "OK ", (f"...{token[-4:]} {'accepted by Hugging Face' if accepted else 'set (Hugging Face did not answer the check)'}"
+                   f"; {kept}")
+
+
 def synced_by_onedrive(folder: Path) -> bool:
     """True when folder is inside a OneDrive folder (Windows names them in OneDrive / OneDriveConsumer /
     OneDriveCommercial)."""
@@ -297,10 +471,16 @@ def ensure_env(key: str, base_py: list[str], device: str, args: argparse.Namespa
     else:
         vpy, how = make_env(folder, base_py)
     req = ROOT / req_rel
-    cons = None if args.check else ensure_torch(vpy, folder, torch_pkgs, device, args.reinstall)
+    if args.check:      # the constraints file the last install wrote (torch pins), to compare the stamp with
+        cons = folder / "openamika-constraints.txt" if torch_pkgs and (folder / "openamika-constraints.txt").is_file() else None
+    else:
+        cons = ensure_torch(vpy, folder, torch_pkgs, device, args.reinstall)
     stamp = folder / "openamika-requirements.sha256"
     want = digest(req, *([cons] if cons else []))
     fresh = stamp.is_file() and stamp.read_text(encoding="utf-8").strip() == want
+    if args.check and stamp.is_file() and not fresh:
+        # an update (git pull) changed the requirements file since it was installed: the imports may still pass
+        raise SetupError(f"{req_rel} changed since it was installed into {rel(folder)}: run this script without --check")
     found = probe(vpy, modules)
     if not args.check and (args.reinstall or not fresh or found["bad"]):
         log(f"installing {req_rel} into {rel(folder)}" + (" (torch stays pinned)" if cons else ""))
@@ -339,12 +519,65 @@ def ensure_speech_model(args: argparse.Namespace) -> None:
     row("OK ", "speech model", "speech/models/ (SenseVoiceSmall, 6 files verified by SHA-256)")
 
 
+def hub_cache() -> Path:
+    """The Hugging Face hub cache: HF_HUB_CACHE, else "hub" in HF_HOME (by default ~/.cache/huggingface/hub)."""
+    home = os.environ.get("HF_HOME") or os.path.join(os.path.expanduser("~"), ".cache", "huggingface")
+    return Path(os.environ.get("HF_HUB_CACHE") or os.path.join(home, "hub"))
+
+
 def hf_cached(repo: str) -> Optional[Path]:
     """The snapshot folder of a Hugging Face model in the local cache, or None (a plain file check)."""
-    home = os.environ.get("HF_HOME") or os.path.join(os.path.expanduser("~"), ".cache", "huggingface")
-    snaps = Path(os.environ.get("HF_HUB_CACHE") or os.path.join(home, "hub")) / f"models--{repo.replace('/', '--')}" / "snapshots"
+    snaps = hub_cache() / f"models--{repo.replace('/', '--')}" / "snapshots"
     found = [s for s in snaps.glob("*") if (s / "config.json").is_file()] if snaps.is_dir() else []
     return found[0] if found else None
+
+
+def hf_main_files(repo: str, token: Optional[str]) -> tuple[str, list[dict]]:
+    """(commit, files) of the repository's main revision from the Hub API (a mirror's when HF_ENDPOINT names one):
+    each file with its size and, for a large (LFS) file, its SHA-256."""
+    url = f"{base.HF}/api/models/{repo}/revision/main?blobs=true"
+    req = urllib.request.Request(url, headers=dict(base.UA))
+    if token and base.token_goes_to(url):
+        req.add_unredirected_header("Authorization", "Bearer " + token)
+    with base.OPENER.open(req, timeout=60) as r:
+        data = json.loads(r.read().decode("utf-8"))
+    return str(data["sha"]), list(data.get("siblings") or [])
+
+
+def weight_files(files: list[dict]) -> list[tuple[str, int, str]]:
+    """(name, size, sha256) of the weight files a transformers loader reads from the repository's top folder: its
+    .safetensors files when it has any (transformers prefers them), else its pytorch_model*.bin."""
+    top = [f for f in files if "/" not in str(f.get("rfilename", "")) and (f.get("lfs") or {}).get("sha256")]
+    safe = [f for f in top if f["rfilename"].endswith(".safetensors")]
+    pick = safe or [f for f in top if re.fullmatch(r"pytorch_model(-\d+-of-\d+)?\.bin", f["rfilename"])]
+    return [(str(f["rfilename"]), int(f["lfs"]["size"]), str(f["lfs"]["sha256"])) for f in pick]
+
+
+def prefetch_weights(repo: str, folder: Path) -> str:
+    """Put the model's big weight files into the Hugging Face cache before its loader runs, where the loader looks
+    first (models--<org>--<name>/snapshots/<commit>/<file>), through a .part file that a re-run continues, checked
+    against the SHA-256 the Hub lists, with the speed and the size left on screen every 10 s. (huggingface_hub 1.x
+    starts an interrupted file over from its first byte.) The loader then fetches only the small files. Returns a
+    note, or '' when the Hub could not be asked (the loader downloads everything itself, as before)."""
+    token = base.hf_token(None)[0]
+    try:
+        commit, files = hf_main_files(repo, token)
+    except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError, KeyError, TypeError) as e:
+        log(f"could not list the files of {repo} ({type(e).__name__}: {e}); its loader downloads them instead")
+        return ""
+    weights = weight_files(files)
+    if not weights:
+        return ""
+    snap = hub_cache() / f"models--{repo.replace('/', '--')}" / "snapshots" / commit
+    ver = base.Verified(folder / "openamika-verified.json")
+    got = []
+    for name, size, sha in weights:
+        url = f"{base.HF}/{repo}/resolve/{commit}/{name}"
+        got.append(base.fetch(url, snap / name, size, sha, ver, label=f"{repo}: {name}",
+                              auth=token if token and base.token_goes_to(url) else None))
+    total = sum(size for _, size, _ in weights)
+    return (f"{', '.join(n for n, _, _ in weights)} ({total / 1e9:.1f} GB) "
+            + ("downloaded and checked" if "downloaded" in got else "in place and checked"))
 
 
 def ensure_hf_model(label: str, vpy: Path, folder: Path, repo: str, cmd: list[str], size: str,
@@ -366,9 +599,19 @@ def ensure_hf_model(label: str, vpy: Path, folder: Path, repo: str, cmd: list[st
     if args.check:
         raise SetupError(f"{repo} ({size}) is not downloaded yet: run this script without --check (otherwise the first "
                          "start downloads it)")
-    log(f"downloading {repo} ({size}) into the Hugging Face cache (a public model: no Hugging Face token needed)")
-    # HF_HUB_VERBOSITY=error: the Hub's "you are sending unauthenticated requests" notice is not a problem here
-    env = {**os.environ, "HF_HUB_VERBOSITY": os.environ.get("HF_HUB_VERBOSITY") or "error"}
+    log(f"downloading {repo} ({size}) into the Hugging Face cache (a public model; a Hugging Face token only makes it "
+        "faster)")
+    try:
+        weights = prefetch_weights(repo, folder)
+    except SetupError as e:
+        raise SetupError(f"{repo} could not be downloaded: {e}. Run this script again: the download continues where it "
+                         "stopped") from e
+    # HF_HUB_VERBOSITY=error: the Hub's "you are sending unauthenticated requests" notice is not a problem here.
+    # DISABLE_SAFETENSORS_CONVERSION: a model with only pytorch_model.bin (BAAI/bge-m3) would otherwise also fetch a
+    # converted model.safetensors (2.3 GB more) from a pull request of the bot that converts them, in a thread the
+    # download waits for; the services load the .bin either way.
+    env = {**os.environ, "HF_HUB_VERBOSITY": os.environ.get("HF_HUB_VERBOSITY") or "error",
+           "DISABLE_SAFETENSORS_CONVERSION": "1"}
     p = subprocess.run([str(vpy), "-X", "utf8", *cmd], cwd=str(ROOT), text=True, encoding="utf-8", errors="replace",
                        env=env)
     snap = hf_cached(repo)
@@ -377,7 +620,8 @@ def ensure_hf_model(label: str, vpy: Path, folder: Path, repo: str, cmd: list[st
                          "run this script again (finished files are kept)")
     marker.write_text(json.dumps({"model": repo, "snapshot": str(snap), "at": time.strftime("%Y-%m-%dT%H:%M:%S%z")}),
                       encoding="utf-8")
-    row("OK ", label, f"{repo} in the Hugging Face cache ({snap.parent.parent}, downloaded)")
+    row("OK ", label, f"{repo} in the Hugging Face cache ({snap.parent.parent}, downloaded"
+                      + (f"; {weights}" if weights else "") + ")")
 
 
 # ---- settings.json and brain/.env ---------------------------------------------------------------------------------
@@ -523,6 +767,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                                                      "py -3.11, python3.11; then 3.12)")
     ap.add_argument("--check", action="store_true", help="report what is installed and what is missing; change nothing")
     ap.add_argument("--reinstall", action="store_true", help="run every pip step again")
+    ap.add_argument("--no-token-prompt", action="store_true",
+                    help="do not ask for a Hugging Face token (one in HF_TOKEN or a saved login is still used)")
     args = ap.parse_args(argv)
     for stream in (sys.stdout, sys.stderr):
         try:  # never die on a cp1252 console or a redirected log
@@ -533,27 +779,32 @@ def main(argv: Optional[list[str]] = None) -> int:
     t0 = time.time()
     log(f"OpenAmika setup -> {ROOT}{'  (--check: nothing is changed)' if args.check else ''}  "
         f"({platform.system()} {platform.machine()}, Python {platform.python_version()})")
+    notes, cd = folder_notes(ROOT, caller_dir(), caller_shell())
+    for note in notes:
+        log(f"NOTE: {note}")
     if not args.check:
         free = base.disk_free_gb(ROOT)
-        if free is not None and free < 45:
-            log(f"WARNING: only {free:.0f} GB free; OpenAmika with her voice needs about 45 GB (40 GB without her eyes; "
-                "`pip cache purge` afterwards gives back about 6 GB)")
+        if free is not None and free < 40:
+            log(f"WARNING: only {free:.0f} GB free; OpenAmika with her voice takes about 37 GB (about 28 GB without her "
+                "eyes; `pip cache purge` afterwards gives back about 6 GB)")
         warning = long_folder_warning(ROOT)
         if warning:
             log(warning)
         if synced_by_onedrive(ROOT):
             log("WARNING: this folder is synced by OneDrive: its environments and models (tens of thousands of files, "
-                "~45 GB) would be uploaded too. A folder outside OneDrive (for example C:\\OpenAmika) is better")
+                "~37 GB) would be uploaded too. A folder outside OneDrive (for example C:\\OpenAmika) is better")
     rc = 0
     steps = base.Steps()
     try:
+        mark, note = ask_hf_token(args)
+        row(mark, "Hugging Face token", note)
         base_py: list[str] = []
         if not args.check:
             try:
                 base_py, v = base.find_base_python(args.python)
                 row("OK ", "Python", f"{'.'.join(map(str, v))} ({' '.join(base_py)})")
             except SetupError as e:
-                row("!! ", "Python", str(e))
+                row("!! ", "Python", str(e) if args.python else PYTHON_NEEDED)
                 steps.failed.append("Python")
         gpu = None if args.cpu else gpu_info()
         device = "mac" if IS_MAC and not args.cpu else ("cuda" if gpu else "cpu")
@@ -603,17 +854,23 @@ def main(argv: Optional[list[str]] = None) -> int:
     bad = rc != 0 or any(m.strip() == "!!" for m, _, _ in ROWS)
     print("=" * 78)
     brain_py = rel(env_python(ENVS / "brain"))
+    for note in notes:
+        print(note)
     if bad:
         print("Fix the !! lines above and run this script again (finished steps are skipped)." if not args.check else
               "Not ready: run this script without --check to install what is missing.")
+        if cd:
+            print(f"  (from her folder: {cd})")
     elif args.check:
         print("Her brain, ears, memory" + (" and eyes" if vision_on else "") + " are installed.")
     else:
         voice = f"{brain_py} {os.path.join('scripts', 'setup_tts.py')}"
         # PowerShell runs nothing from the current folder without .\ (cmd accepts it as well)
         start = ".\\Start_OpenAmika.bat" if IS_WIN else f"{brain_py} launch.py"
-        pad = max(len(voice), len(start)) + 3
+        pad = max(len(voice), len(start), len(cd)) + 3
         print("Done. Next:")
+        if cd:
+            print(f"  0. {cd.ljust(pad)}go into her folder first: the two lines below run there")
         print(f"  1. {voice.ljust(pad)}her voice, her Live2D model and the paper doll (type yes to accept her license)")
         print(f"  2. {start.ljust(pad)}start her; the page opens at http://localhost:53000")
     return rc or (1 if bad else 0)

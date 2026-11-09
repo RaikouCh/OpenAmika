@@ -50,8 +50,18 @@ def is_good(path: Path, size: int, sha: str) -> bool:
     return path.is_file() and path.stat().st_size == size and sha256_of(path) == sha
 
 
+def progress(done: int, size: int, rate: float) -> str:
+    """'   412 / 937 MB  43%  8.1 MB/s  525 MB left, about 1 min'"""
+    speed = f"{rate / 1e6:.1f} MB/s" if rate >= 1e5 else f"{rate / 1e3:.0f} KB/s"
+    left = max(0, size - done)
+    eta = left / rate if rate > 0 else 0
+    when = (f", about {max(1, round(eta / 60))} min" if eta < 5400 else f", about {eta / 3600:.1f} h") if left and rate else ""
+    return f"{done / 1e6:7.0f} / {size / 1e6:.0f} MB  {done * 100 // size:3d}%  {speed}  {left / 1e6:,.0f} MB left{when}"
+
+
 def fetch(url: str, part: Path, size: int) -> None:
-    """Download url into part (resuming when the server honours Range); raises on any failure."""
+    """Download url into part (resuming when the server honours Range: ModelScope and Hugging Face both do);
+    raises on any failure. A large file shows its progress, speed and what is left."""
     have = part.stat().st_size if part.exists() else 0
     if have > size:
         part.unlink()
@@ -62,8 +72,11 @@ def fetch(url: str, part: Path, size: int) -> None:
     with urllib.request.urlopen(request, timeout=60) as response:
         if have and response.status != 206:      # no range support: start over
             have = 0
+        if have:
+            print(f"    continuing at {have / 1e6:,.0f} MB (an earlier run stopped there)")
         mode = "ab" if have else "wb"
         done, last = have, 0.0
+        t0, first = time.monotonic(), have
         with part.open(mode) as out:
             while True:
                 block = response.read(CHUNK)
@@ -74,7 +87,8 @@ def fetch(url: str, part: Path, size: int) -> None:
                 now = time.monotonic()
                 if size > 10 * CHUNK and now - last > 0.5:
                     last = now
-                    sys.stdout.write(f"\r    {done / 1e6:7.0f} / {size / 1e6:.0f} MB  {done * 100 // size:3d}%")
+                    rate = (done - first) / max(1e-6, now - t0)
+                    sys.stdout.write("\r    " + progress(done, size, rate) + "   ")
                     sys.stdout.flush()
     if size > 10 * CHUNK:
         sys.stdout.write("\n")

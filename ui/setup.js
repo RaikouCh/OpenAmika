@@ -178,6 +178,7 @@
     $("provOllama").querySelector("span").textContent = onOllama && !onCloud ? "in use · fully local · a 27B+ model" : "fully local · a 27B+ model · a 32 GB GPU or a second PC";
     $("orBackNote").hidden = !onOllama;
     if (!provChosen) showProvider(onOllama && !onCloud ? "ollama" : "openrouter");
+    if (kinds.has("openrouter")) loadCatalog(); else $("orGoneNote").hidden = true;
 
     const grid = $("roleGrid");
     grid.replaceChildren();
@@ -220,13 +221,28 @@
   }
   $("provOpenrouter").addEventListener("click", () => { provChosen = true; showProvider("openrouter"); });
   $("provOllama").addEventListener("click", () => { provChosen = true; showProvider("ollama"); loadOllama(); });
-  $("orBack").addEventListener("click", async () => {
+  async function backToPreset() {
     try {
       const r = await postAction("/api/build_f/preset", "apply-preset", { provider: "openrouter" });
       toast("Back on OpenRouter: " + (r.applied_preset || "preset applied") + ".");
       loadModels();
     } catch (error) { toast(String(error.message || error), true); }
-  });
+  }
+  $("orBack").addEventListener("click", backToPreset);
+  $("orGoneBack").addEventListener("click", backToPreset);
+
+  // a model chosen here that OpenRouter no longer offers makes every reply fail: say which, offer the preset back
+  async function loadCatalog() {
+    try {
+      const c = await getJSON("/api/build_f/openrouter/catalog");
+      const gone = c.checked ? (c.missing || []) : [];
+      $("orGoneText").textContent = gone.length
+        ? "OpenRouter no longer offers " + gone.map((x) => x.model + " (" + x.role + ")").join(", ") + ": every reply that needs it fails." +
+          ((c.preset_missing || []).length ? " (The preset names a model that is gone too: update OpenAmika.)" : "")
+        : "";
+      $("orGoneNote").hidden = !gone.length;
+    } catch (_) { $("orGoneNote").hidden = true; }
+  }
 
   let ollamaInfo = null;
   function olModelLabel(m) {
@@ -252,6 +268,7 @@
     select.replaceChildren(...(n ? (ollamaInfo.models || []).map((m) => el("option", { value: m.name, text: olModelLabel(m) }))
                                  : [el("option", { value: "", text: "— detect models first —" })]));
     if (current) select.value = current;
+    warnSmallModel();
     $("olUse").disabled = !n;
     const roles = Object.keys(inUse);
     $("olNote").textContent = roles.length === 4 ? "All four roles run on " + (new Set(Object.values(inUse)).size === 1 ? current : "local models") + "."
@@ -268,33 +285,55 @@
     } catch (error) { $("olStatus").textContent = String(error.message || error); toast(String(error.message || error), true); }
     finally { $("olDetect").disabled = false; }
   });
+  // under 27B parameters she does not hold her character (common.js smallModelWarning)
+  function warnSmallModel() {
+    const model = ((ollamaInfo && ollamaInfo.models) || []).find((m) => m.name === $("olModel").value);
+    const text = window.OA.smallModelWarning ? window.OA.smallModelWarning(model) : "";
+    $("olWarn").textContent = text;
+    $("olWarn").hidden = !text;
+    return text;
+  }
+  $("olModel").addEventListener("change", warnSmallModel);
   $("olUse").addEventListener("click", async () => {
     const model = $("olModel").value;
     if (!model) { toast("Detect models first.", true); return; }
+    const warning = warnSmallModel();
     try {
       const r = await postAction("/api/build_f/ollama/use", "ollama-use", { model });
-      toast("She now thinks locally on " + model + " — fully local." + (r.transport === "ollama" ? "" : " (" + r.transport + ")"));
+      toast("She now thinks locally on " + model + " — fully local." + (r.transport === "ollama" ? "" : " (" + r.transport + ")") +
+            (warning ? " " + warning : ""), !!warning);
       loadModels(); loadOllama();
     } catch (error) { toast(String(error.message || error), true); }
   });
 
   // ── OpenRouter API key ──
+  // the saved key with its balance: OpenRouter is prepaid, so a key on an account without credits is not enough
+  function showKey(k) {
+    const line = $("orKeyStatus");
+    if (!k.present) { line.textContent = "No key saved yet — paste one to bring her online."; line.style.color = ""; return; }
+    const b = window.OA.keyBalance ? window.OA.keyBalance(k) : { level: "ok", text: "" };
+    line.textContent = (b.level === "ok" ? "Saved ✓ " : "Saved ✗ ") + (k.hint || "") + (b.text ? " · " + b.text : "");
+    line.style.color = b.level === "ok" ? "" : "var(--err)";
+  }
   async function loadKey() {
     try {
-      const k = await getJSON("/api/build_f/openrouter_key");
-      $("orKeyStatus").textContent = k.present ? "Saved ✓ " + (k.hint || "") : "No key saved yet — paste one to bring her online.";
+      showKey(await getJSON("/api/build_f/openrouter_key?credits=1"));
     } catch (_) { $("orKeyStatus").textContent = "key status unavailable (is the brain running?)"; }
   }
   loadKey();
   $("orKeySave").addEventListener("click", async () => {
     const key = $("orKeyInput").value.trim();
     if (!key) { toast("Paste your OpenRouter key first (sk-or-…).", true); return; }
+    $("orKeySave").disabled = true;
+    $("orKeyStatus").textContent = "saving and asking OpenRouter for the balance…";
     try {
       const result = await postAction("/api/build_f/openrouter_key", "openrouter-key", { key });
       $("orKeyInput").value = "";
-      toast(result.note || "Key saved.");
-      loadKey();
-    } catch (error) { toast(String(error.message || error), true); }
+      showKey(result);
+      const b = window.OA.keyBalance ? window.OA.keyBalance(result) : { level: "ok" };
+      toast(result.note || "Key saved.", b.level !== "ok");
+    } catch (error) { toast(String(error.message || error), true); loadKey(); }
+    finally { $("orKeySave").disabled = false; }
   });
 
   $("modelsSave").addEventListener("click", async () => {

@@ -676,7 +676,10 @@ registerProcessor('pcm-pusher', PCMPusher);`;
         break;
       case "ai_error":
         resetEmote();
-        toast(msg.message || "She hit an error.", true);
+        // the provider's own first line ("OpenRouter (HTTP 402): Insufficient credits … — OpenRouter is prepaid: …")
+        // stays in the chat log, where her reply would have been; the toast only points at it
+        chatAdd("sys", "Error", msg.message || "She hit an error.");
+        toast(msg.provider ? "Her model provider refused the reply — see the chat." : (msg.message || "She hit an error."), true);
         break;
       case "tts_error":
         if (msg.surface_last) surfaceClosed();         // the surface's final sentence failed: nothing left to wait for
@@ -1281,10 +1284,18 @@ registerProcessor('pcm-pusher', PCMPusher);`;
     }
 
     async function loadKeyStatus(line) {
-      try { keyStatus = await getJSON("/api/build_f/openrouter_key"); }
+      try { keyStatus = await getJSON("/api/build_f/openrouter_key?credits=1"); }
       catch (_) { keyStatus = null; }
-      line.textContent = keyStatus === null ? "key status unavailable — is the brain running?"
-        : keyStatus.present ? "A key is saved ✓ " + (keyStatus.hint || "") : "No key saved yet.";
+      showKey(line, keyStatus);
+    }
+    // the green check, or why there is none yet: OpenRouter is prepaid, so a key without credits is not enough
+    function showKey(line, k, note) {
+      if (k === null) { line.textContent = "key status unavailable — is the brain running?"; line.style.color = ""; return; }
+      if (!k.present) { line.textContent = "No key saved yet."; line.style.color = ""; return; }
+      const b = window.OA.keyBalance ? window.OA.keyBalance(k) : { level: "ok", text: "" };
+      line.textContent = (b.level === "ok" ? "✓ Key saved " : "✗ Key saved ") + (k.hint || "") + (b.text ? " · " + b.text : "") +
+        (note && b.level !== "ok" ? " — " + note : "");
+      line.style.color = b.level === "ok" ? "var(--ok)" : "var(--err)";
     }
 
     async function runCheck(rows, verdict, next) {
@@ -1371,28 +1382,44 @@ registerProcessor('pcm-pusher', PCMPusher);`;
         const save = button("Save key", async () => {
           const key = input.value.trim();
           if (!key) { toast("Paste your OpenRouter key first (sk-or-…).", true); return; }
+          save.disabled = true;
+          line.textContent = "saving and asking OpenRouter for the balance…"; line.style.color = "";
           try {
-            await postAction("/api/build_f/openrouter_key", "openrouter-key", { key });
+            const r = await postAction("/api/build_f/openrouter_key", "openrouter-key", { key });
             input.value = "";
-            toast("Key saved — she's online.");
-            loadKeyStatus(line);
-          } catch (error) { toast(String(error.message || error), true); }
+            keyStatus = r;
+            showKey(line, r, r.note);
+            const b = window.OA.keyBalance ? window.OA.keyBalance(r) : { level: "ok" };
+            toast(r.note || "Key saved.", b.level !== "ok");
+          } catch (error) { toast(String(error.message || error), true); loadKeyStatus(line); }
+          finally { save.disabled = false; }
         }, "small primary");
         orPanel.append(el("div", { class: "form-row" }, el("div", { class: "field", style: "flex:2" }, el("label", { text: "OpenRouter API key" }), input), save), line,
-          el("p", { class: "hint", text: "Get a key at openrouter.ai → Keys; that's the only account she needs. In almost all cases this is the better choice: her tested models, for a few dollars a month." }));
+          el("p", { class: "hint", text: "Get a key at openrouter.ai → Keys; that's the only account she needs. OpenRouter is prepaid: add a few dollars of credit first (openrouter.ai/settings/credits) — a chat costs about $0.002. In almost all cases this is the better choice: her tested models, for a few dollars a month." }));
         loadKeyStatus(line);
         // Ollama panel
         const olUrl = el("input", { type: "text", placeholder: "http://127.0.0.1:11434", autocomplete: "off" });
         const olStatus = el("span", { class: "card-hint", text: "" });
         const olSelect = el("select", {});
         const olNote = el("p", { class: "hint", text: "Use a model of 27B or more (70B or more for the full, reliable experience): smaller models may be really bad — she loses her character, forgets and breaks her replies. Install Ollama from ollama.com, run ollama pull gemma3:27b (17 GB), press Detect models, pick it, press Use this model, and she runs entirely on this computer — her memory search already does. A 27B model needs about 19 GB of GPU memory next to her own ~6 GB (~10 GB with her eyes): one 32 GB card holds it; with less, run Ollama on another PC (put its address above) or choose OpenRouter, in almost all cases the better choice." });
+        // under 27B parameters she does not hold her character: say so before the model is used (common.js)
+        const olWarn = el("p", { class: "hint", style: "color:var(--err)", hidden: "" });
+        let olModels = [];
+        const warnSmall = () => {
+          const text = window.OA.smallModelWarning ? window.OA.smallModelWarning(olModels.find((m) => m.name === olSelect.value)) : "";
+          olWarn.textContent = text;
+          olWarn.hidden = !text;
+          return text;
+        };
+        olSelect.addEventListener("change", warnSmall);
         const useBtn = button("Use this model", async () => {
           const model = olSelect.value;
           if (!model) { toast("Detect models first.", true); return; }
+          const warning = warnSmall();
           try {
             await postAction("/api/build_f/ollama/use", "ollama-use", { model });
             olStatus.textContent = "She thinks locally on " + model + " now.";
-            toast("Fully local: " + model + ".");
+            toast(warning ? "Fully local: " + model + ". " + warning : "Fully local: " + model + ".", !!warning);
           } catch (error) { toast(String(error.message || error), true); }
         }, "small primary");
         useBtn.disabled = true;
@@ -1401,10 +1428,12 @@ registerProcessor('pcm-pusher', PCMPusher);`;
             const info = await getJSON("/api/build_f/ollama");
             if (!olUrl.value.trim()) olUrl.value = info.base_url || "http://127.0.0.1:11434";
             const models = info.models || [];
+            olModels = models;
             olSelect.replaceChildren(...(models.length ? models.map((m) => el("option", { value: m.name, text: m.name + (m.parameter_size ? " · " + m.parameter_size : "") + (m.size_gb ? " · " + m.size_gb + " GB" : "") }))
                                                        : [el("option", { value: "", text: "— detect models first —" })]));
             const inUse = info.in_use || {};
             if (inUse.deep) olSelect.value = inUse.deep;
+            warnSmall();
             useBtn.disabled = !models.length;
             olStatus.textContent = info.reachable ? "Ollama " + (info.live_version || "") + " is running" + (models.length ? " · " + models.length + " model(s)" : " · no models detected yet")
               : "not answering at " + info.base_url + " — start Ollama, then Detect";
@@ -1420,7 +1449,7 @@ registerProcessor('pcm-pusher', PCMPusher);`;
           finally { detect.disabled = false; }
         }, "small");
         olPanel.append(el("div", { class: "form-row" }, el("div", { class: "field", style: "flex:2" }, el("label", { text: "Ollama server" }), olUrl), detect), olStatus,
-          el("div", { class: "form-row" }, el("div", { class: "field", style: "flex:2" }, el("label", { text: "Model for all four roles" }), olSelect), useBtn), olNote);
+          el("div", { class: "form-row" }, el("div", { class: "field", style: "flex:2" }, el("label", { text: "Model for all four roles" }), olSelect), useBtn), olWarn, olNote);
         body.append(choice, orPanel, olPanel);
         // start on whichever she already uses
         getJSON("/api/build_f/models").then((m) => {

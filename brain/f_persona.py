@@ -331,18 +331,37 @@ def install_persona(g):
         except ValueError as error:
             return jsonify({"ok": False, "error": str(error)}), 400
 
-    @app.route("/api/build_f/openrouter_key", methods=["GET"])
-    def openrouter_key_get():
+    # The account's balance next to the saved key (Setup → Brain, the first-run wizard): asked of OpenRouter when the
+    # key is saved and, at most once a minute, when a page asks (?credits=1). OpenRouter is prepaid: a key on an
+    # account without credits makes every reply fail.
+    balance_cache = {"key": None, "at": 0.0, "value": None}
+
+    def balance(key, fresh=False):
+        import time as _time
+        from f_openrouter import account_balance
+        if not fresh and balance_cache["key"] == key and _time.monotonic() - balance_cache["at"] < 60:
+            return balance_cache["value"]
+        value = account_balance(g["http_requests"], key, timeout=(3, 6))
+        balance_cache.update(key=key, at=_time.monotonic(), value=value)
+        return value
+
+    def saved_key():
         env_path = BRAIN_DIR / ".env"
-        key = None
         if env_path.is_file():
             for line in env_path.read_text(encoding="utf-8-sig").splitlines():
                 if line.strip().startswith("OPENROUTER_API_KEY="):
-                    key = line.split("=", 1)[1].strip().strip('"').strip("'")
-                    break
+                    return line.split("=", 1)[1].strip().strip('"').strip("'")
+        return None
+
+    @app.route("/api/build_f/openrouter_key", methods=["GET"])
+    def openrouter_key_get():
+        key = saved_key()
         present = bool(key) and not key.endswith("your-key-here")
         hint = (key[:9] + "…" + key[-4:]) if present and len(key) > 16 else None
-        return jsonify({"ok": True, "present": present, "hint": hint})
+        result = {"ok": True, "present": present, "hint": hint}
+        if present and request.args.get("credits") == "1":
+            result["credits"] = balance(key)
+        return jsonify(result)
 
     @app.route("/api/build_f/openrouter_key", methods=["POST"])
     def openrouter_key_set():
@@ -364,9 +383,24 @@ def install_persona(g):
             if not replaced:
                 lines.append(f"OPENROUTER_API_KEY={key}")
             _write_atomic(env_path, "\n".join(lines) + "\n")
-            os.environ["OPENROUTER_API_KEY"] = key   # the transport reads it per call
-            return jsonify({"ok": True, "present": True, "hint": key[:9] + "…" + key[-4:],
-                            "note": "Saved to brain/.env — takes effect on her next reply."})
+            # applied now, no restart: every OpenRouter call (f_roles.client, the settlement worker) reads the key
+            # from the environment when it is made; a key cached in the brain's globals would shadow it
+            os.environ["OPENROUTER_API_KEY"] = key
+            g.pop("OPENROUTER_KEY", None)
+            credits = balance(key, fresh=True)
+            if credits.get("ok") and credits.get("empty"):
+                note = ("Saved, but this OpenRouter account has no credits: OpenRouter is prepaid. Add a few dollars at "
+                        "https://openrouter.ai/settings/credits; she answers as soon as they are there.")
+            elif credits.get("ok"):
+                left = credits.get("left")
+                note = "Saved and working — she uses it from her next reply" + (
+                    f" (${left:,.2f} of credit left)." if isinstance(left, (int, float)) else ".")
+            elif credits.get("refused"):
+                note = "Saved, but OpenRouter refused this key: it is wrong or was deleted. Make a new one at openrouter.ai → Keys."
+            else:
+                note = "Saved — she uses it from her next reply (the balance could not be checked right now)."
+            return jsonify({"ok": True, "present": True, "hint": key[:9] + "…" + key[-4:], "note": note,
+                            "credits": credits})
         except PermissionError as error:
             return jsonify({"ok": False, "error": str(error)}), 403
         except ValueError as error:

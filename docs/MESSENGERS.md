@@ -11,7 +11,9 @@ bots are online, or that none is set up yet.
 1. [Developer Portal](https://discord.com/developers/applications) → *New Application* → *Bot* → *Reset Token*; copy it.
 2. *OAuth2 → URL Generator*: scope `bot`. No permissions are needed for DMs; add *Send Messages* if you
    want to @mention her in a server. Open the link, invite the bot to any server you share with it
-   (that is what lets you DM it).
+   (that is what lets you DM it). **The bot must share a server with you before a DM works**: without a
+   server of your own, make a small one first (Discord: + → Create My Own). The MekaHime Discord is not
+   that server: her bot lives on yours.
 3. Paste the token on the Setup page, add **your user id** to the allow-list (Discord: *Settings →
    Advanced → Developer Mode*, then right-click your name → *Copy User ID*), tick *Enabled*, save.
 4. DM the bot. In a server she answers only when @mentioned.
@@ -46,8 +48,11 @@ Discord DM / Telegram message (allowed user)
   does on stage — so it stays in her history. Once her whole reply is delivered the service tells the brain
   the turn has "played out" (what the stage sends when the audio ends), and the brain archives it into her
   memory like any spoken turn.
-- Each turn carries a context line (`[Channel] This message arrived as a text message on Telegram…`), so
-  she knows she is texting, not talking.
+- Each turn carries a context line (in Chinese, like all her cues: this is a text message on Discord or
+  Telegram, read on her phone, he is not next to her), so she knows she is texting, not talking. It also says
+  where she is by name, her Discord channel on his own server (or his DMs), so she says "in my Discord channel
+  on your server" instead of a bare "here", and that only words reach her there: pictures and voice
+  messages do not (the bridge reads a message's text only).
 - Replies longer than a platform's limit (Discord 2000, Telegram 4096 characters) are split at a
   paragraph, then a sentence, then a space.
 - Turns **she** starts (a reflection making her speak first, a helper reporting back) go to the chat she

@@ -36,6 +36,7 @@ import stt_carry
 from tts_emotion import prefix_emotion
 from tts_sfx import parse_sfx_delta, resolve_sfx, list_files as sfx_list_files
 from tts_pause import pause_after
+from tts_text import voice_text
 import voice_adapter
 from silero_vad import load_silero_vad
 
@@ -45,7 +46,7 @@ logger = logging.getLogger("yumeha")
 # ----------------------------- word replacer ------------------------------ #
 # Standalone, clone-owned pronunciation and STT correction map.
 _WORDMAP_PATH = str(Path(__file__).resolve().parent.parent / "config" / "word_replace.json")
-_wordmap = {"mtime": None, "stt": [], "tts": []}
+_wordmap = {"mtime": None, "stt": [], "tts": [], "keep_caps": []}
 
 
 def _wordmap_compile(rows):
@@ -82,6 +83,8 @@ def _wordmap_refresh():
             data = json.load(f) or {}
         _wordmap["stt"] = _wordmap_compile(data.get("stt_to_llm"))
         _wordmap["tts"] = _wordmap_compile(data.get("llm_to_tts"))
+        keep = data.get("tts_keep_caps")
+        _wordmap["keep_caps"] = [str(k) for k in keep] if isinstance(keep, list) else []
         _wordmap["mtime"] = mt
         logger.info(f"[wordmap] {len(_wordmap['stt'])} stt + {len(_wordmap['tts'])} tts rules")
     except Exception as e:
@@ -89,12 +92,16 @@ def _wordmap_refresh():
 
 
 def apply_wordmap(text, which):
-    """which = 'stt' (transcript -> Hane) or 'tts' (reply -> Freya)."""
+    """which = 'stt' (transcript -> Hane) or 'tts' (reply -> Freya). For 'tts' the rules are followed by
+    speech/tts_text.voice_text: capitals for emphasis are lower-cased (acronyms and "tts_keep_caps" stay), dashes
+    become commas and ellipses full stops, so her voice neither spells "YOUR" nor reads "dot dot dot"."""
     if not text:
         return text
     _wordmap_refresh()
     for pat, to in _wordmap.get(which) or []:
         text = pat.sub(lambda m, _t=to: _t, text)      # literal replacement (no group refs)
+    if which == "tts":
+        text = voice_text(text, _wordmap.get("keep_caps") or ())
     return text
 logger.setLevel(logging.INFO)
 if not logger.handlers:
@@ -126,12 +133,12 @@ MODEL_DIR = os.getenv(
     os.path.join(os.path.dirname(__file__), "models"),
 )
 
-logger.info(f"Loading Yumeha model from {MODEL_DIR} on {DEVICE} ...")
+logger.info(f"Loading the speech recognition model (SenseVoiceSmall) from {MODEL_DIR} on {DEVICE} ...")
 load_start = time.time()
 m, kwargs = SenseVoiceSmall.from_pretrained(model=MODEL_DIR, device=DEVICE)
 m.eval()
 load_elapsed = time.time() - load_start
-logger.info(f"Model loaded in {load_elapsed:.2f}s")
+logger.info(f"Speech recognition model loaded in {load_elapsed:.2f}s")
 
 logger.info("Loading Silero VAD ...")
 _vad_load_start = time.time()
@@ -146,7 +153,8 @@ APP_NAME = "OpenAmika"
 
 app = FastAPI(
     title=f"{APP_NAME} Chat and Speech",
-    description="梦羽 — 极速多语言语音识别服务",
+    description="OpenAmika's speech gateway: speech recognition (SenseVoiceSmall), her web pages, and the link to her "
+                "brain and her voice",
     version="1.0.0",
 )
 
@@ -274,13 +282,13 @@ async def health():
 
 @app.post("/api/v1/asr")
 async def asr(
-    files: Annotated[List[UploadFile], File(description="音频文件")],
-    keys: Annotated[Optional[str], Form(description="文件名，逗号分隔")] = None,
-    lang: Annotated[Language, Form(description="语言")] = "auto",
-    use_itn: Annotated[bool, Form(description="逆文本正则化")] = True,
+    files: Annotated[List[UploadFile], File(description="audio files")],
+    keys: Annotated[Optional[str], Form(description="a name for each file, comma-separated")] = None,
+    lang: Annotated[Language, Form(description="language (auto detects it)")] = "auto",
+    use_itn: Annotated[bool, Form(description="inverse text normalization: numbers and punctuation as written")] = True,
 ):
     if not files:
-        raise HTTPException(status_code=400, detail="未提供音频文件")
+        raise HTTPException(status_code=400, detail="No audio file was sent.")
 
     request_start = time.time()
     audios = []
@@ -305,7 +313,7 @@ async def asr(
             audios.append(audio_tensor)
             audio_lengths.append(len(audio_tensor) / TARGET_FS)
         except Exception as e:
-            raise HTTPException(status_code=400, detail=f"处理音频文件 {file.filename} 失败: {str(e)}")
+            raise HTTPException(status_code=400, detail=f"Could not read the audio file {file.filename}: {str(e)}")
 
     if lang == "":
         lang = "auto"
@@ -328,7 +336,7 @@ async def asr(
         )
     except Exception as e:
         logger.error(f"Inference failed: {e}")
-        raise HTTPException(status_code=500, detail=f"推理失败: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Speech recognition failed: {str(e)}")
 
     inference_elapsed = time.time() - inference_start
     total_elapsed = time.time() - request_start
@@ -919,16 +927,19 @@ async def build_f_persona_simple_save(request: Request):
 
 
 @app.get("/api/build_f/openrouter_key")
-async def build_f_openrouter_key():
+async def build_f_openrouter_key(credits: Optional[str] = None):
+    """Is a key saved (and, with ?credits=1, the account's balance: the brain asks OpenRouter, at most once a minute)."""
+    want = credits == "1"
     try:
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as client:
-            async with client.get(HANE_URL.rstrip("/") + "/api/build_f/openrouter_key", allow_redirects=False) as response:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15 if want else 5)) as client:
+            async with client.get(HANE_URL.rstrip("/") + "/api/build_f/openrouter_key" + ("?credits=1" if want else ""),
+                                  allow_redirects=False) as response:
                 if response.status != 200:
                     raise HTTPException(status_code=503, detail="Key status unavailable.")
                 payload = await response.json()
         if not isinstance(payload, dict) or payload.get("ok") is not True:
             raise ValueError("Unexpected key status")
-        return {key: payload.get(key) for key in ("ok", "present", "hint")}
+        return {key: payload.get(key) for key in ("ok", "present", "hint", "credits")}
     except HTTPException:
         raise
     except (aiohttp.ClientError, asyncio.TimeoutError, ValueError):
@@ -937,8 +948,29 @@ async def build_f_openrouter_key():
 
 @app.post("/api/build_f/openrouter_key")
 async def build_f_openrouter_key_set(request: Request):
+    # the brain asks OpenRouter for the account's balance before it answers: give it the time
     return await _build_f_control(request, "/api/build_f/openrouter_key", "openrouter-key",
-                                  ("ok", "present", "hint", "note"))
+                                  ("ok", "present", "hint", "note", "credits"), timeout=25)
+
+
+@app.get("/api/build_f/openrouter/catalog")
+async def build_f_openrouter_catalog(refresh: Optional[str] = None):
+    """Whether OpenRouter still offers the models her roles (and the OpenRouter preset) use."""
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as client:
+            async with client.get(HANE_URL.rstrip("/") + "/api/build_f/openrouter/catalog"
+                                  + ("?refresh=1" if refresh == "1" else ""), allow_redirects=False) as response:
+                if response.status != 200:
+                    raise HTTPException(status_code=503, detail="Model check unavailable.")
+                payload = await response.json()
+        if not isinstance(payload, dict):
+            raise ValueError("Unexpected model check")
+        return {key: payload.get(key) for key in ("ok", "checked", "checked_at", "missing", "preset", "preset_missing",
+                                                  "error", "note")}
+    except HTTPException:
+        raise
+    except (aiohttp.ClientError, asyncio.TimeoutError, ValueError):
+        raise HTTPException(status_code=503, detail="Model check unavailable.") from None
 
 
 @app.get("/api/build_f/iot")
@@ -3432,7 +3464,7 @@ class DialogSession:
                 logger.warning(f"[dlg {self._peer}] AI error (no turn_id): {data}")
             else:
                 logger.warning(
-                    f"[dlg {self._peer}] AI {event_type} 没带 turn_id，已丢弃。"
+                    f"[dlg {self._peer}] AI {event_type} came without a turn_id: dropped"
                 )
             return
 

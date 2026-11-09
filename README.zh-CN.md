@@ -16,7 +16,7 @@ Amika 是一个 Live2D 二次元少女：她能用语音和文字与你实时聊
 [![Release](https://img.shields.io/github/v/release/zeekk0/OpenAmika?logo=github&color=d8b4e2)](https://github.com/zeekk0/OpenAmika/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-43b581)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%20(Linux%20untested)-0078D6?logo=windows&logoColor=white)](#准备工作)
-[![Python 3.11](https://img.shields.io/badge/python-3.11-3776AB?logo=python&logoColor=white)](https://www.python.org/downloads/release/python-3119/)
+[![Python 3.11 | 3.12](https://img.shields.io/badge/python-3.11%20%7C%203.12-3776AB?logo=python&logoColor=white)](https://www.python.org/downloads/release/python-3119/)
 
 [![Hugging Face](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-MekaHime%2FMekaHime__Amika-ffcc4d)](https://huggingface.co/MekaHime/MekaHime_Amika)
 [![Discord](https://img.shields.io/badge/Discord-MekaHime-5865F2?logo=discord&logoColor=white)](https://discord.gg/mekahime)
@@ -27,13 +27,142 @@ Amika 是一个 Live2D 二次元少女：她能用语音和文字与你实时聊
 
 </div>
 
+## 安装：7 个步骤
+
+**开始之前：** 你有 Windows 10 或 11、一张 NVIDIA 显卡（RTX 20 系列或更新，8 GB 显存）和约 40 GB 的空闲磁盘吗？
+
+- **有** → 从 STEP 1 开始。
+- **没有** → 直接在浏览器里和她聊：[mekahime.com/amika](https://www.mekahime.com/amika)。
+
+### STEP 1 — 安装 Python 3.11 和 Git
+
+约 5 分钟。
+
+1. 点击 [python-3.11.9-amd64.exe](https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe)，打开它。勾选第一个窗口底部的 **Add python.exe to PATH**，点击 **Install Now**。
+2. 点击 [Git-2.56.0.4-64-bit.exe](https://github.com/git-for-windows/git/releases/download/v2.56.0.windows.4/Git-2.56.0.4-64-bit.exe)，打开它。一直点 **Next** 直到出现 **Install**，点 **Install**，最后点 **Finish**。
+
+你会看到：“Setup was successful”（Python）和“Completing the Git Setup Wizard”（Git）。
+
+### STEP 2 — 在她要住的文件夹里打开 PowerShell
+
+1. 按 **Windows 键**，输入 `powershell`，按 **回车**。用普通窗口，不要“以管理员身份运行”。
+2. 复制下面这一行，点一下蓝色窗口，**右键**（这样就粘贴了），按 **回车**。
+
+```powershell
+cd C:\
+```
+
+你会看到：`PS C:\>` 和闪烁的光标。
+
+任何磁盘都可以：`cd D:\` 就把她放在 D 盘。路径越短越好。不要放在 OneDrive 里。
+
+### STEP 3 — 下载 OpenAmika
+
+每次粘贴一行，按 **回车**，等 `PS ...>` 重新出现。约 1 分钟。
+
+```powershell
+git clone https://github.com/zeekk0/OpenAmika.git
+```
+
+```powershell
+cd OpenAmika
+```
+
+你会看到：`PS C:\OpenAmika>`。
+
+- 如果看到 `'git' is not recognized` → 关掉这个窗口，从 STEP 2 重新开始（新窗口才找得到 Git），再做这一步。
+- 如果看到 `destination path 'OpenAmika' already exists` → 已经下载过了：粘贴 `cd OpenAmika` 继续。
+
+### STEP 4 — 运行安装
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\setup_windows.ps1
+```
+
+需要 15 到 60 分钟，下载约 11 GB。窗口保持打开。
+
+它会先问 Hugging Face 令牌：按 **回车** 跳过，或者粘贴在 [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens) 免费创建的 *Read* 令牌（下载会快很多）。
+
+最后你会看到：`OpenAmika setup summary`、以 `OK` 开头的行，然后是 `Done. Next:`。
+
+- 如果看到 `The argument 'scripts\setup_windows.ps1' to the -File parameter does not exist` → 这个窗口不在她的文件夹里。粘贴 `cd C:\OpenAmika`（或安装程序打印出的那行 `cd`），按 **回车**，再运行一次。
+- 如果看到 `Python 3.11 was not found` → 重新做 STEP 1，勾选 **Add python.exe to PATH**。然后开一个新窗口（STEP 2），`cd C:\OpenAmika`，再运行这一行。
+- 如果下载很慢（约 50 KB/s）→ 按 **Ctrl+C**，再运行这一行，问令牌时粘贴 Hugging Face 令牌。它会从停下的地方继续。
+- 如果有一行以 `!!` 开头 → 照那一行说的做，然后再运行一次。已完成的部分会跳过。
+
+### STEP 5 — 她的声音和模型
+
+```powershell
+envs\brain\Scripts\python.exe scripts\setup_tts.py
+```
+
+需要 10 到 30 分钟，下载约 5.5 GB。它先显示她的许可证，然后询问：输入 `yes`，按 **回车**。
+
+你会看到：`OK voice MekaHime_Amika` 和 `OK Live2D model Amika`，然后是 `Done. Next:`。
+
+- 如果看到 `not downloaded: her license was not accepted` → 再运行一次，输入 `yes`。
+- 如果看到 `'envs\brain\Scripts\python.exe' is not recognized` → 这个窗口不在她的文件夹里（`cd C:\OpenAmika`），或者 STEP 4 没有完成。
+
+### STEP 6 — 启动她
+
+```powershell
+.\Start_OpenAmika.bat
+```
+
+以后只要双击 `C:\OpenAmika` 里的 `Start_OpenAmika.bat`。
+
+需要 1 到 3 分钟（第一次最慢）。
+
+你会看到：一个叫 **OpenAmika** 的窗口，里面是绿色的行。浏览器打开她的页面（http://localhost:53000），首次使用窗口会问你的名字和你所在的城市。
+
+- 如果她的窗口显示 `moved to … in settings.json (chat_port)` → Windows 预留了 53000 端口，她换到了下一个空闲端口。打开她窗口顶部显示的地址。
+- 如果她的窗口因错误停下 → 窗口会保持打开，并显示日志（`logs\launcher.log`）。把这个文件带到 [Discord](https://discord.gg/mekahime)。
+
+### STEP 7 — 在首次使用窗口里粘贴你的 OpenRouter 密钥
+
+1. 在 [openrouter.ai](https://openrouter.ai) 登录，打开 **Credits**，充几美元。OpenRouter 是预付费的：只有密钥是不够的。
+2. 打开 **Keys** → **Create Key**，复制密钥（以 `sk-or-v1-` 开头）。
+3. 在她的首次使用窗口里，到“大脑”那一步：点 **OpenRouter**，粘贴密钥，点 **Save key**。
+
+你会看到：绿色的 `✓ Key saved … · $5.00 of credit left`。点 **Next**，再点一下她的页面（让浏览器允许她说话），按电源按钮，开始聊天。
+
+- 如果看到 `no credits` → 在 openrouter.ai 充值，然后再点一次 **Save key**。
+- 如果回复失败 → 聊天里会显示 OpenRouter 自己给出的原因。如果是模型下架了：Setup → Brain → **Switch back to the OpenRouter preset**。
+
+> **下载的是 ZIP 而不是 `git clone`？** 解压后，打开里面那一层文件夹（有 `Start_OpenAmika.bat` 的那个）。在空白处右键 → **在终端中打开**。然后做 STEP 4 到 STEP 7。
+> （Windows 10：点文件夹的地址栏，输入 `powershell`，按 **回车**。）
+
+*STEP 1 到 STEP 6 参考了 **metro01** 在 MekaHime Discord 帮助频道写的分步指南。谢谢你，metro01！*
+
+## 更新她（保留她的记忆）
+
+她的记忆在 `memory_f` 和 `brain\memories` 里。做任何事之前先备份它们。
+
+**用 git clone 安装的**
+
+1. **STEP 1 — 停止她。** 双击 `Stop_OpenAmika.bat`。
+2. **STEP 2 — 双击她文件夹里的 `Update_OpenAmika.bat`。** 它会把她的记忆和你的设置保存到 `backups\update-<日期>.zip`，下载更新，并安装有变化的部分。如果问到许可证，输入 `yes`。
+
+你会看到：`Updated. Start her: double-click Start_OpenAmika.bat`。
+
+- 如果看到 `She is running` → 先做 STEP 1。
+- 如果它列出“with your own changes”的文件 → 保留的是你的版本。她的记忆是安全的。
+
+**下载 ZIP 安装的**
+
+1. **STEP 1 — 停止她。** 双击 `Stop_OpenAmika.bat`。
+2. **STEP 2 — 下载新的 ZIP，解压在旧文件夹旁边。**
+3. **STEP 3 — 把下面这些从旧文件夹复制到新文件夹**（有的才复制）：`memory_f`、`brain\memories`、`settings.json`、`brain\.env`、`config\seed.json`、`config\ollama.json`、`config\voice_map.json`、`config\tools.json`、`config\messengers.json`。
+4. **STEP 4 — 在新文件夹里运行安装**：在新文件夹里做安装的 STEP 4 和 STEP 5。第二次会快一些。
+5. **STEP 5 — 从新文件夹启动她。** 她可能会再问一次你的名字和城市，但她的记忆都在。确认她还记得你之后，再删除旧文件夹。
+
 > 💖 如果 Amika 让你的一天变得更美好，就在 [GitHub](https://github.com/zeekk0/OpenAmika) 上给我们点个 ⭐ 吧——这能帮更多人找到她！· 支持本项目：https://www.mekahime.com/donate
 
 ## 准备工作
 
 - Windows 10 或 11，以及一块 NVIDIA 显卡（RTX 20 系列或更新，显存 8 GB 以上；她的摄像头“眼睛”需要 16 GB），驱动保持较新
-- [Python 3.11](https://www.python.org/downloads/release/python-3119/)（安装时勾选 **Add python.exe to PATH**）和 [Git](https://git-scm.com/download/win)
-- 约 45 GB 可用磁盘空间。安装过程会下载约 15–20 GB，耗时 30–60 分钟
+- [Python 3.11](https://www.python.org/downloads/release/python-3119/)（安装时勾选 **Add python.exe to PATH**；3.12 也可以。3.13 及更新版本不行：她的语音服务器需要 numpy 1.26.4，而它没有这些版本的 wheel）和 [Git](https://git-scm.com/download/win)
+- 约 40 GB 可用磁盘空间（装好后约占 37 GB，不装摄像头“眼睛”约 28 GB；装完后 `pip cache purge` 能腾出约 6 GB）。安装过程会下载约 16 GB，耗时 30–60 分钟
 - 一个给语言模型用的 [OpenRouter](https://openrouter.ai) 密钥（推荐，每月只需几美元）；或者 [Ollama](https://ollama.com)，外加一块跑得动 27B 及以上模型的显卡（见[用哪种语言模型？](#用哪种语言模型)）
 
 ## 用哪种语言模型？

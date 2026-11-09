@@ -1,4 +1,5 @@
-﻿# OpenAmika smart home — the install that needs administrator rights, done once: Eclipse Mosquitto, the MQTT
+﻿# OPTIONAL, only for her smart home (Zigbee plugs): talking to her, her voice and her setup never need this script.
+# OpenAmika smart home — the install that needs administrator rights, done once: Eclipse Mosquitto, the MQTT
 # broker zigbee2mqtt and OpenAmika's smart-home server talk through (winget). The Silicon Labs CP210x USB-UART
 # driver (the SONOFF Zigbee Dongle Plus MG24 is a CP2102N; without it Windows shows the dongle with "code 28" and no
 # COM port) is installed by Install_CP210x_driver.ps1; Setup_IoT_admin.bat runs both. Everything else (zigbee2mqtt,

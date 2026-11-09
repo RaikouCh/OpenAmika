@@ -152,3 +152,96 @@ def install_controls(g, meter):
         if started:
             flush()
         return g['jsonify']({'ok': True, 'flush_started': started, **result, 'memory': memory.status()})
+
+    install_catalog_check(g)
+
+
+# ── is every OpenRouter model she uses still offered? ────────────────────────────────────────────────────────────
+# A model chosen on Setup → Brain can leave OpenRouter's catalog (one person had picked a qwen3-235b entry that was
+# gone): every reply then fails. The brain asks OpenRouter's public model list once at start (after the boot-time
+# resume, never at import) and again at most every 30 minutes when a page asks; the health light and Setup → Brain
+# offer "Switch back to the OpenRouter preset" (POST /api/build_f/preset {"provider": "openrouter"}).
+CATALOG_MAX_AGE_S = 1800
+
+
+def openrouter_models(manager, selections):
+    """{role: (model_id, canonical_slug)} of the roles that run on OpenRouter in these selections."""
+    out = {}
+    for role, key in (selections or {}).items():
+        row = (manager.options.get(role) or {}).get(key)
+        if row and row.get('transport') == 'openrouter' and isinstance(row.get('config'), dict):
+            config = row['config']
+            out[role] = (config.get('model_id'), config.get('canonical_slug'))
+    return out
+
+
+def missing_models(models, offered):
+    """[{role, model}] of the models (from openrouter_models) that the offered ids no longer list."""
+    return [{'role': role, 'model': model} for role, (model, slug) in sorted(models.items())
+            if model not in offered and (not slug or slug not in offered)]
+
+
+def openrouter_preset(manager):
+    """The preset "Switch back to the OpenRouter preset" applies: the first available one of that provider."""
+    return next((p for p in manager.document.get('presets', [])
+                 if isinstance(p, dict) and p.get('provider') == 'openrouter' and manager._preset_ok(p)), None)
+
+
+def install_catalog_check(g):
+    import threading
+    import time
+    from datetime import datetime, timezone
+
+    state = {'at': 0.0, 'ids': None, 'error': None, 'checked_at': None}
+    lock = threading.Lock()
+
+    def status(refresh=False):
+        manager = g.get('F_ROLES')
+        if manager is None:
+            return {'ok': False, 'error': 'Tested model choices are not installed yet.'}
+        in_use = openrouter_models(manager, manager.selections)
+        preset = openrouter_preset(manager)
+        if not in_use and not refresh:
+            return {'ok': True, 'checked': False, 'missing': [], 'preset': (preset or {}).get('name'),
+                    'preset_missing': [], 'error': None, 'note': 'no role runs on OpenRouter'}
+        with lock:
+            if refresh or state['ids'] is None or time.monotonic() - state['at'] > CATALOG_MAX_AGE_S:
+                from f_openrouter import fetch_model_ids
+                try:
+                    state['ids'], state['error'] = fetch_model_ids(g['http_requests']), None
+                    state['checked_at'] = datetime.now(timezone.utc).isoformat(timespec='seconds')
+                except Exception as error:  # noqa: BLE001  (offline: say so, never guess)
+                    state['error'] = f'the OpenRouter model list is unavailable right now ({type(error).__name__})'
+                state['at'] = time.monotonic()
+            offered = state['ids']
+        if offered is None:
+            return {'ok': True, 'checked': False, 'missing': [], 'preset': (preset or {}).get('name'),
+                    'preset_missing': [], 'error': state['error']}
+        preset_models = openrouter_models(manager, (preset or {}).get('selections') or {})
+        return {'ok': True, 'checked': True, 'checked_at': state['checked_at'],
+                'missing': missing_models(in_use, offered), 'preset': (preset or {}).get('name'),
+                'preset_missing': missing_models(preset_models, offered), 'error': state['error']}
+
+    g['F_CATALOG_STATUS'] = status
+
+    @g['app'].route('/api/build_f/openrouter/catalog', methods=['GET'])
+    def openrouter_catalog():
+        return g['jsonify'](status(refresh=g['request'].args.get('refresh') == '1'))
+
+    def check_at_start():
+        time.sleep(3)
+        try:
+            result = status()
+        except Exception as error:  # noqa: BLE001
+            print(f'[models] could not check the OpenRouter model list: {type(error).__name__}: {error}')
+            return
+        for gone in result.get('missing') or []:
+            print(f"[models] OpenRouter no longer offers {gone['model']} (the {gone['role']} role): every "
+                  "reply that needs it fails. Setup → Brain → Switch back to the OpenRouter preset")
+
+    previous = g.get('f_resume_pending')
+    if callable(previous):
+        def resume_then_check():
+            previous()
+            threading.Thread(target=check_at_start, daemon=True, name='F-openrouter-catalog').start()
+        g['f_resume_pending'] = resume_then_check

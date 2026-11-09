@@ -40,6 +40,7 @@ def fresh(tmp_path, monkeypatch):
     monkeypatch.setattr(launch, "AVATAR_MODELS", tmp_path / "avatar" / "models")
     monkeypatch.setattr(launch, "INSTANCE", tmp_path / "logs" / "instance.json")
     monkeypatch.setattr(launch, "listeners", lambda: {})
+    monkeypatch.setattr(launch, "bind_state", lambda port, host="127.0.0.1": "")   # never this machine's own ports
     monkeypatch.delenv("HERMES_HOME", raising=False)                    # never this machine's own Hermes home
     monkeypatch.delenv("API_SERVER_KEY", raising=False)
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "LocalAppData"))
