@@ -1,7 +1,8 @@
 ﻿# Stops only this folder's OpenAmika processes:
 #   1. whatever the launcher recorded in logs\instance.json: the launcher itself and the services it started (TTS,
 #      the MQTT broker, zigbee2mqtt, Hermes, nanoMuse - matched by pid AND executable path, so a reused pid is never hit);
-#   2. the core components, by script path on the command line (launcher, brain, speech, embedder, vision, messengers);
+#   2. the core components, by script path on the command line (launcher, brain, speech, embedder, vision, messengers,
+#      her desktop pet window);
 #   3. a launcher started with a relative "launch.py" by this folder's brain python (settings.json brain_python).
 # Never by port or window title, so other python processes and other OpenAmika checkouts are untouched.
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -57,7 +58,8 @@ $targets = @(
     (Join-Path $root 'speech\api.py'),
     (Join-Path $root 'brain\embed_server.py'),
     (Join-Path $root 'vision\vlm_service.py'),
-    (Join-Path $root 'messengers\service.py')
+    (Join-Path $root 'messengers\service.py'),
+    (Join-Path $root 'pet.py')
 )
 # this folder's brain python, which runs its launcher (Start_OpenAmika.bat passes launch.py by its full path; a console
 # may have run "envs\brain\Scripts\python.exe launch.py" instead)

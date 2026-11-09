@@ -104,8 +104,8 @@ the services in `settings.json` → `services` (her voice server; the smart-home
 accepted) and the agents in `config/tools.json` autostart entries (when its top-level `enabled` and the entry's
 `enabled` are true), in parallel; then the core one by one, each
 waiting for its health URL: embedder → brain → vision (when enabled) → speech → messengers. The browser opens when
-speech answers. Ctrl+C (or `Stop_OpenAmika.bat`) stops everything this launcher started. Every process binds
-127.0.0.1.
+speech answers (with `--pet`, her desktop pet window instead, §8.2). Ctrl+C (or `Stop_OpenAmika.bat`) stops
+everything this launcher started. Every process binds 127.0.0.1.
 
 | process | script | environment (Python 3.11) | port (setting) | health | talks to |
 |---|---|---|---|---|---|
@@ -115,6 +115,7 @@ speech answers. Ctrl+C (or `Stop_OpenAmika.bat`) stops everything this launcher 
 | embedder | `brain/embed_server.py` | `envs/embed` (torch 2.10.0, sentence-transformers) | 8011 (`embedder.port`) | `GET /health` | – (BAAI/bge-m3, cut to 768 dims) |
 | vision (her eyes) | `vision/vlm_service.py` | `envs/vision` (torch 2.10.0 + torchvision 0.25.0, transformers) | 8014 (`vision.port`) | `GET /api/health` | speech (`ws://127.0.0.1:53000/ws/vlm_feed`); only when `vision.enabled` |
 | messengers | `messengers/service.py` | `envs/speech` | 5215 (`messengers_port`) | `GET /health` | the brain (Socket.IO), Discord / Telegram |
+| pet window (optional, `launch.py --pet`) | `pet.py` (pywebview, Microsoft Edge WebView2) | `envs/brain` + `brain/requirements-pet.txt` | – | its process (`logs/pet.log`) | speech (`/use?pet=1`, `WS /ws/dialog`), §8.2 |
 | her voice server | `vendor/tts-engine/main.py` (aiohttp + Socket.IO, GPT-SoVITS v2ProPlus) | `vendor/tts-engine/.venv` (torch 2.9.1, CUDA 12.8) | 8002 (`tts_url`, `services.tts`) | `GET /ping` (`503 loading` for ~20 s, then `ok`) | – |
 | Ollama (optional) | – | – | 11434 (`local_model_url`, Setup → Brain) | – | – |
 | mosquitto / zigbee2mqtt (optional, IoT) | `IoT/` | – | 1883 / 8080 | – | the `iot` MCP server (`servers/openamika-iot`) |
@@ -144,6 +145,7 @@ and the interactive map at `/flow`. Socket protocol: [brain/PROTOCOL.md](brain/P
 |---|---|
 | `launch.py` | the launcher: grace cleanup of an earlier instance of this folder, pre-flight (`--check`), start order, the one-console dashboard, Ctrl+C stops all; writes `logs/preflight.json`, `logs/instance.json`, `logs/launcher.log` |
 | `Start_OpenAmika.bat` / `Stop_OpenAmika.bat` (`Stop_OpenAmika.ps1`) | start (reads `brain_python` from `settings.json`) / stop exactly what this folder started (by script path, `logs/instance.json`, and a launcher that this folder's brain python runs as a relative `launch.py`). The `.bat` ends with `pause`: from a terminal without a console use `powershell -NoProfile -ExecutionPolicy Bypass -File Stop_OpenAmika.ps1` |
+| `pet.py`, `Start_OpenAmika_Pet.bat`, `brain/requirements-pet.txt` | her desktop pet window (§8.2): `launch.py --pet` (what the `.bat` runs) opens it instead of the browser; the optional pywebview it needs |
 | `Tailscale_Serve_OpenAmika.bat` | maps `https://<machine>.<tailnet>.ts.net:8447/` to the speech port with Tailscale Serve (`off` removes it) |
 | `scripts/setup_windows.ps1` | Windows entry point: finds Python 3.11 (`py -3.11`, `python3.11`, `python`) and runs `scripts/setup_core.py` |
 | `scripts/setup_core.py` | her brain, ears, memory and eyes: `envs/brain`, `envs/speech`, `envs/embed`, `envs/vision`, SenseVoiceSmall, bge-m3, Qwen3-VL-2B (or the models an existing `settings.json` names), then `settings.json`, `brain/.env`; `--check`, `--cpu`, `--vision auto|on|off`, `--reinstall` |
@@ -609,6 +611,7 @@ danger zone: wipe her memory / reset everything; Simple and Professional modes),
 and task agents with their health, Start and Test; per-tool policies `auto` / `confirm` / `deny`, Add a server and
 Raw config (tools.json) in Professional mode; the IoT switch and its safety statement), **About**
 (`/about`: MekaHime, supporting the project, licenses), and `/flow` (the interactive architecture map).
+`/use?pet=1` is the Use page as her desktop pet window shows it (§8.2): the stage alone on a transparent page.
 
 The light at the top right of every page (`ui/common.js`, `healthCheck`) is green *System Ready*, yellow *Warnings*
 or breathing red *System Failures*; click it for the list. It polls: Brain, Memory, OpenRouter key (when a role uses
@@ -768,6 +771,54 @@ one on the doll). Each new line of the tool dialogue becomes a bubble: hers
 `started`, `continuing`, `stop requested`, `approval granted`, a session note) gets no bubble. Without a `role:
 agent` model there is no doll and no helper bubbles; the **Her helpers** card and (Professional) the **Tool
 dialogue** card still show everything.
+
+### 8.2 Her desktop pet window (`pet.py`)
+
+Optional and Windows only (tested on Windows 11 build 26200, WebView2 157, pywebview 6.2.1): her Live2D stage alone in
+a frameless, see-through, always-on-top window (the "desktop pet" of AIRI and similar companions). Nothing else
+depends on it, and it adds no feature of its own: same page, same dialog socket, same voice, lip-sync and expressions.
+
+- **Install**: `envs\brain\Scripts\python.exe -m pip install -r brain\requirements-pet.txt` (pywebview with pythonnet;
+  it uses the Microsoft Edge WebView2 Runtime that Windows 11 ships). `setup_core.py` does not install it.
+- **Start**: `Start_OpenAmika_Pet.bat` runs `Start_OpenAmika.bat --pet`, i.e. `launch.py --pet`. The pre-flight gets a
+  `pet window` line (`OK pet window  pywebview found: …`, or `!! pet window  pywebview is not installed: <python> -m
+  pip install -r brain\requirements-pet.txt (the page opens in your browser until then)`; `--check --pet` prints it
+  too). When speech answers, the launcher starts `pet.py --url http://localhost:<chat_port>` instead of opening the
+  browser: row `pet window` under Core, output in `logs/pet.log`. Closing the window is no failure: the row turns grey,
+  `closed; she keeps running. Open it again: <python> pet.py`. It is stopped with everything else (recorded in
+  `logs/instance.json`; `pet.py` is in the launcher's `CORE_SCRIPTS` for the grace cleanup and in
+  `Stop_OpenAmika.ps1`'s script paths). `pet.py` alone opens it for an OpenAmika that already runs (`--url` for
+  another address, `--debug` for WebView2's developer tools); exit 1 when `<url>/health` does not answer, 2 without
+  pywebview, WebView2 or Windows.
+- **The window**: pywebview loads `/use?pet=1` in WebView2 (`frameless`, `transparent`, `on_top`,
+  `easy_drag=False`). On Windows pywebview's `transparent` alone leaves the WinForms window opaque grey behind the
+  page; `see_through()` (pywebview's `before_show`, on the window's thread) paints the form black and extends DWM's
+  frame over the whole client area (`DwmExtendFrameIntoClientArea` with -1 margins, and `DWMWA_SYSTEMBACKDROP_TYPE`
+  = none so Windows 11 draws no backdrop material there). DWM then composes it with per-pixel alpha: the desktop
+  shows wherever the page is transparent and her soft edges blend. A colour key (`TransparencyKey`) does not work
+  (WebView2's own surface stays dark grey there), and an Edge `--app` window has no transparent mode at all.
+- **The page** (`<html class="pet">` from an inline script in `use.html`'s head, before the first paint; `use.js`
+  "desktop pet"; `openamika.css` `html.pet`): the stage leaves the hidden page layout before her model loads; no nav,
+  footer, stage top bar, subtitles, background photo, camera preview, speech bubbles or paper doll, and no first-run
+  wizard (meet her on the full page first). Power and mic move into `.pet-bar` (shown on hover; a live mic stays
+  visible) next to `full page` and `close`. `avatar.init({fixed: true})`: the model is never dragged or zoomed inside
+  the window and no saved view applies, so she always fills it (her `banks.json` `scale`). Her canvas has the class
+  `pywebview-drag-region`: dragging her moves the window. The wheel calls `window.pywebview.api.zoom(f)`: the window
+  grows or shrinks around her feet, at least 160×240, at most the screen's work area. `full_page()` closes the window,
+  then opens `/use` in the default browser (one `/ws/dialog` at a time: a second gets `OpenAmika is open in another
+  tab`).
+- **State**: `logs/pet-window/window.json` (x, y, width, height in pywebview's logical pixels, written 0.6 s after
+  the window stops moving and on close; when its centre is off every screen, 320×560 at the bottom right of the
+  primary screen's work area) and `logs/pet-window/webview/` (its WebView2 profile: localStorage and a cache that
+  holds her model, about 150 MB).
+- **Microphone and sound**: the window grants WebView2's `Microphone` permission to its own origin only
+  (`PermissionRequested`), when the page asks for it (the person clicked the mic); every other permission keeps
+  WebView2's prompt. WebView2 lets audio start without a click (a new `AudioContext` runs at once), so her voice
+  needs no click on the window. pywebview passes WebView2 its own browser arguments, so
+  `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` has no effect on this window (checked on the browser process).
+- **Limits**: the see-through part of the window still takes clicks (no click-through yet); Windows only; Windows 10
+  and Windows 11 before 22H2 are untested. To check the page without opening a window on someone's screen, load
+  `/use?pet=1` in headless Microsoft Edge (the same engine) with `--mute-audio`.
 
 ## 9. Troubleshooting
 
@@ -983,6 +1034,10 @@ each entry below was checked against the code):
   `tts` row and `logs/tts.log`.
 - Health light `OpenRouter key  no key saved` → §5.4. `Ollama (local brain)  not answering …` → start Ollama.
 - Text but no sound → click the page once (autoplay); TTS must be green.
+- `!! pet window  pywebview is not installed` → `envs\brain\Scripts\python.exe -m pip install -r
+  brain\requirements-pet.txt`; the page opened in the browser meanwhile. Her window opens and closes at once →
+  `logs\pet.log` (`OpenAmika is not answering at …`: speech is not up, or pass `--url`). Her window is a grey or dark
+  box instead of see-through → Windows 10 or an early Windows 11, untested (§8.2): use the browser page.
 - Wizard says `Some part is missing — she can't fully work yet.` → fix the red rows on the Setup page.
 - Wipe / reset answers 409 → power her off on the Use page (she must be idle), wait a few seconds, retry.
 
@@ -999,7 +1054,8 @@ clerk (with agent autostart and health), the agents bridge against in-process
 fakes of Hermes and nanoMuse (`tests/test_agents_bridge.py`: jobs, approvals, questions, stop, health with
 `no_model` and `refused`, the copied-home session fallback, the bridge's own steps marked `internal`, a real MCP
 stdio round trip), the paper doll on the Use page (by source: only its state loop picks its motions, no bubble for
-the bridge's own steps), the IoT safety statement,
+the bridge's own steps), her desktop pet window (`tests/test_pet.py`: its address, saved position and zoom, the
+`pet window` pre-flight line and row, what ships), the IoT safety statement,
 the launcher pre-flight (`tests/test_launch_preflight.py`: a fresh checkout, Ollama, a foreign voice server on her
 port, her own running ports, the time-zone database, the helpers' start commands, Hermes's key, the paper doll, the
 shipped `tools.example.json`), `setup_core.py` (`tests/test_setup_core.py`: a re-run after an interrupted first run,

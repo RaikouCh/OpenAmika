@@ -1,0 +1,6 @@
+# Her desktop pet window (pet.py: launch.py --pet, Start_OpenAmika_Pet.bat). Optional, Windows only: nothing else
+# needs it, and without it the page opens in the browser as usual. pywebview shows the Use page in Microsoft Edge
+# WebView2 (part of Windows 11). Install it into the brain environment once, from the OpenAmika folder:
+#   envs\brain\Scripts\python.exe -m pip install -r brain\requirements-pet.txt
+# Tested with pywebview 6.2.1 (pythonnet 3.2.1) and WebView2 157 on Windows 11.
+pywebview>=6.2,<7; sys_platform == "win32"

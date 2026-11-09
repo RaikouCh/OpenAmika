@@ -6,6 +6,9 @@
 <meta name="theme-color" content="#14091a">
 <title>OpenAmika · Use</title>
 <link rel="stylesheet" href="/ui/openamika.css">
+<!-- her desktop pet (?pet=1, the window pet.py opens): only her stage, on a transparent window. Set before the first
+     paint so the page never flashes behind her; use.js does the rest ("desktop pet") -->
+<script>if (new URLSearchParams(location.search).has("pet")) document.documentElement.classList.add("pet");</script>
 </head>
 <body>
 <main class="oa-main">

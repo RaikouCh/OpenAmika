@@ -4,6 +4,8 @@
   python launch.py --check         validate config, environments, imports and files; start nothing
                                    (one OK / -- / !! line per check, then "result: ready" or what to fix)
   python launch.py --no-browser    same as the default, without opening the web UI
+  python launch.py --pet           same, with her desktop pet window (pet.py: only her, transparent, always on top)
+                                   instead of the web UI in the browser; needs pywebview (brain/requirements-pet.txt)
 
 The console is a single dashboard that redraws in place: one row per service. A spinning marker means
 it is still launching, or up and working right now (its log is moving); a steady light means it is idle
@@ -24,7 +26,7 @@ What happens
      process runs hidden. A service that is already running (started by hand) is used as is and left alone.
      The smart-home services (MQTT broker, zigbee2mqtt) are held back until the IoT safety statement
      (docs/IOT_DISCLAIMER.md) is accepted on the Tools page; accepted while running, they start then.
-  4. Open the web UI. Ctrl+C stops everything this launcher started.
+  4. Open the web UI (with --pet: her desktop pet window, pet.py). Ctrl+C stops everything this launcher started.
 
 The optional local embedding service (brain/embed_server.py, BAAI/bge-m3 cut to 768 dims) starts before
 the brain when settings.json has an `embedder` block; the brain reaches it through AMIKA_EMBEDDING_URL.
@@ -55,7 +57,7 @@ INSTANCE = LOGS / 'instance.json'
 PREFLIGHT = LOGS / 'preflight.json'
 NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
 CORE_SCRIPTS = ('launch.py', 'brain/webui.py', 'speech/api.py', 'brain/embed_server.py', 'vision/vlm_service.py',
-                'messengers/service.py')
+                'messengers/service.py', 'pet.py')
 AGENT_HEALTH = {'hermes': ('HERMES_URL', '/health'), 'nanomuse': ('NANOMUSE_URL', '/api/health')}
 # the smart-home chain is several processes but one thing to the person: one row, one light
 IOT_SERVICES = ('mqtt', 'zigbee2mqtt')
@@ -1370,6 +1372,53 @@ class PageOpener:
         return True
 
 
+# ── her desktop pet (launch.py --pet) ────────────────────────────────────────────────────
+PET_REQUIREMENTS = os.path.join('brain', 'requirements-pet.txt')
+
+
+def pet_check():
+    """(level, detail) of the 'pet window' pre-flight line: pet.py runs in this Python (the brain's) and needs pywebview
+    in it, on Windows. Without it the page opens in the browser as usual."""
+    if os.name != 'nt':
+        return 'err', 'her desktop pet window is Windows-only; the page opens in your browser instead'
+    if importlib.util.find_spec('webview') is None:
+        return 'err', (f'pywebview is not installed: {shown(sys.executable)} -m pip install -r {PET_REQUIREMENTS} '
+                       '(the page opens in your browser until then)')
+    return 'ok', 'pywebview found: her window opens when speech is up (pet.py)'
+
+
+class PetWindow(Service):
+    """Her desktop pet window (pet.py), opened in place of the browser page once speech answers and stopped with the
+    rest. Closing it is no failure: she keeps running, and pet.py opens it again."""
+
+    def __init__(self, url):
+        super().__init__('pet window', [sys.executable, '-X', 'utf8', ROOT / 'pet.py', '--url', url], kind='core',
+                         log=LOGS / 'pet.log', url=url)
+        self.detail = 'opens when speech is up'
+
+    def is_up(self):
+        return self.proc is not None and self.proc.poll() is None
+
+    def open(self, _url=None):
+        self.start()
+
+    def poll(self):
+        if self.proc is not None and self.proc.poll() is not None and self.state in ('starting', 'up'):
+            code = self.proc.returncode
+            if code == 0:
+                self.state, self.detail = 'off', f'closed; she keeps running. Open it again: {shown(sys.executable)} pet.py'
+            else:
+                self.state, self.detail = 'failed', f'exited with code {code} — see logs/{self.log.name}'
+            log(f'{self.name}: {self.detail}')
+        elif self.state == 'starting' and self.is_up():
+            self.state, self.detail = 'up', ''
+            log(f'{self.name}: up')
+
+    def stop(self):
+        if self.started_by_me and self.proc is not None and self.proc.poll() is None:
+            kill_tree(self.proc.pid)         # with its WebView2 processes; its position is saved as it moves
+
+
 # ── main ─────────────────────────────────────────────────────────────────────────────────
 def core_services(cfg, emb, vis):
     ports = [int(cfg['brain_port']), int(cfg['chat_port'])]
@@ -1429,6 +1478,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     parser.add_argument('--check', action='store_true', help='validate config, environments, imports and files; start nothing')
     parser.add_argument('--no-browser', action='store_true')
+    parser.add_argument('--pet', action='store_true', help='open her desktop pet window (pet.py) instead of the browser page')
     args = parser.parse_args()
     enable_vt()
     try:
@@ -1466,6 +1516,9 @@ def main():
         print(f'{APP} pre-flight  {ROOT}')
         report = preflight(cfg, emb, vis, tools, tools_error, services, agents, list_processes(), deep=True, printer=printer,
                            held_iot=held_iot)
+        if args.pet:
+            level, detail = pet_check()
+            report.add(level, 'pet window', detail)
         report.save()
         print(f"  {report.count('ok')} ok · {report.count('warn')} warning(s) · {report.count('err')} problem(s). "
               "No models loaded and no API requests made.")
@@ -1489,6 +1542,13 @@ def main():
         state['phase'] = 'pre-flight…'
         procs = list_processes()
         report = preflight(cfg, emb, vis, tools, tools_error, services, agents, procs, held_iot=held_iot)
+        pet = None
+        if args.pet and not args.no_browser:
+            level, detail = pet_check()
+            report.add(level, 'pet window', detail)
+            if level == 'ok':
+                pet = PetWindow(url)
+                everything.append(pet)
         report.save()
         state['report'] = report
 
@@ -1533,7 +1593,8 @@ def main():
         report.resolve(everything)       # "will be started" items that did start are green now, here and on the Setup page
         report.save()
         write_instance(everything)
-        page = PageOpener(url, next(s for s in cores if s.name == 'speech'), enabled=not args.no_browser)
+        page = PageOpener(url, next(s for s in cores if s.name == 'speech'), enabled=not args.no_browser,
+                          opener=pet.open if pet else None)
         page.check()
         state['phase'] = 'running'
         last_instance = time.monotonic()

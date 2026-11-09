@@ -139,6 +139,28 @@ Every part writes a log in `logs\`. For anything else, ask on [Discord](https://
 - **Text her** on Discord or Telegram ([docs/MESSENGERS.md](docs/MESSENGERS.md)).
 - **Your phone**: `Tailscale_Serve_OpenAmika.bat` makes her reachable on your own devices over
   [Tailscale](https://tailscale.com).
+- **Desktop pet**: she stands on your desktop by herself, always on top of your other windows
+  ([below](#desktop-pet-mode)).
+
+## Desktop pet mode
+
+She can also stand on your desktop by herself: a see-through window with only her in it, on top of your other
+programs, with her voice, lip-sync and expressions as on the Use page. Windows only. It needs one install, once:
+
+```powershell
+envs\brain\Scripts\python.exe -m pip install -r brain\requirements-pet.txt
+```
+
+Then double-click `Start_OpenAmika_Pet.bat` instead of `Start_OpenAmika.bat` (or run `launch.py --pet`): when she
+is ready, her window opens instead of the browser page. Hover over her for a small bar: power, microphone, the full
+page, close. Click the microphone and talk as usual. Drag her to move the window; the mouse wheel over her makes
+her bigger or smaller; she comes back where you left her. Closing her window does not stop her:
+`envs\brain\Scripts\python.exe pet.py` opens it again, `Stop_OpenAmika.bat` stops everything.
+
+- One conversation at a time: the full-page button closes her window, then opens the page in your browser.
+- Meet her on the full page first: the first-run wizard, the camera, the background photo and her helpers' paper
+  doll are there.
+- The see-through corners of her window still take your clicks: keep it snug around her.
 
 ## Her helpers: Hermes and nanoMuse
 
