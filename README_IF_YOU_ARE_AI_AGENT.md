@@ -36,7 +36,8 @@ ever disagree, the code wins, and you should fix this file in the same change.
    `README.md`, `LICENSE`, `THIRD_PARTY_NOTICES.md`). After onboarding, `config/build_f.json` and
    `config/word_replace.json` hold the person's name and city: do not commit those changes to a public fork.
 6. **Do not disturb a running stack.** Her default ports are 53000, 5202, 8011, 8002, 8014 and 5215, her helpers'
-   8642 (Hermes Agent) and 8787 (nanoMuse) (§2). To inspect,
+   8642 (Hermes Agent) and 8787 (nanoMuse) (§2); a port Windows reserved has been moved by the launcher (read
+   `settings.json`, never assume the default). To inspect,
    use `launch.py --check` (starts nothing; while she runs, her own ports read `OK … held by this OpenAmika
    (running)`) and the health URLs; to experiment, use other ports. `launch.py` stops an earlier instance *of the
    same folder* when it starts ("grace"), so starting her twice restarts her.
@@ -131,7 +132,8 @@ block), `AMIKA_VLM_URL` (with vision on).
 **A voice turn**: mic PCM (browser) → `WS /ws/dialog` → Silero VAD + SenseVoiceSmall STT (speech) → brain
 `message` → surface four-liner (spoken at once) → deep stream → `speech/hane_parser.py`
 splits `[emotion]"sentence"` runs → one TTS request per sentence (`tts_request_gateway`, text `【happy2】.sentence`,
-voice adapter applied) → `tts_audio {audio_b64, emotion, pause_after}` to the browser → `ui/live2d-engine.js` plays the
+after the `llm_to_tts` word map and `speech/tts_text.py`: shouting lower-cased, dashes → commas, ellipses → full
+stops; voice adapter applied) → `tts_audio {audio_b64, emotion, pause_after}` to the browser → `ui/live2d-engine.js` plays the
 audio and fires the expression and motion at playback start → `tts_playing` / `tts_finished` acks drive barge-in →
 the memory writer archives the turn; reflection may open the next turn. With tools on, the post-speech clerk runs
 once the turn's text is final and hands a helper only what she agreed to (§8.1). Diagrams: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
@@ -142,11 +144,12 @@ and the interactive map at `/flow`. Socket protocol: [brain/PROTOCOL.md](brain/P
 
 | path | role |
 |---|---|
-| `launch.py` | the launcher: grace cleanup of an earlier instance of this folder, pre-flight (`--check`), start order, the one-console dashboard, Ctrl+C stops all; writes `logs/preflight.json`, `logs/instance.json`, `logs/launcher.log` |
-| `Start_OpenAmika.bat` / `Stop_OpenAmika.bat` (`Stop_OpenAmika.ps1`) | start (reads `brain_python` from `settings.json`) / stop exactly what this folder started (by script path, `logs/instance.json`, and a launcher that this folder's brain python runs as a relative `launch.py`). The `.bat` ends with `pause`: from a terminal without a console use `powershell -NoProfile -ExecutionPolicy Bypass -File Stop_OpenAmika.ps1` |
+| `launch.py` | the launcher: grace cleanup of an earlier instance of this folder, a reserved port moved (`move_reserved_ports`), pre-flight (`--check`), start order, the one-console dashboard, Ctrl+C stops all; writes `logs/preflight.json`, `logs/instance.json`, `logs/launcher.log` (and `settings.json` when a port moved, the old one in `settings.json.bak`) |
+| `Update_OpenAmika.bat` (`scripts/update_openamika.ps1`) | update a git clone in place: refuses while she runs, zips her memory and settings into `backups/update-<yyyyMMdd-HHmm>.zip`, `git stash` / `pull --ff-only` / `stash pop` (a conflict keeps the person's version), then the setups' checks and, when something changed, the setups (§5.7) |
+| `Start_OpenAmika.bat` / `Stop_OpenAmika.bat` (`Stop_OpenAmika.ps1`) | start (reads `brain_python` from `settings.json`; sets `OPENAMIKA_PAUSE_ON_ERROR=1`, so a launcher that fails keeps its window open and names `logs\launcher.log`) / stop exactly what this folder started (by script path, `logs/instance.json`, and a launcher that this folder's brain python runs as a relative `launch.py`). The `.bat` ends with `pause`: from a terminal without a console use `powershell -NoProfile -ExecutionPolicy Bypass -File Stop_OpenAmika.ps1` |
 | `Tailscale_Serve_OpenAmika.bat` | maps `https://<machine>.<tailnet>.ts.net:8447/` to the speech port with Tailscale Serve (`off` removes it) |
-| `scripts/setup_windows.ps1` | Windows entry point: finds Python 3.11 (`py -3.11`, `python3.11`, `python`) and runs `scripts/setup_core.py` |
-| `scripts/setup_core.py` | her brain, ears, memory and eyes: `envs/brain`, `envs/speech`, `envs/embed`, `envs/vision`, SenseVoiceSmall, bge-m3, Qwen3-VL-2B (or the models an existing `settings.json` names), then `settings.json`, `brain/.env`; `--check`, `--cpu`, `--vision auto|on|off`, `--reinstall` |
+| `scripts/setup_windows.ps1` | Windows entry point: finds Python 3.11, else 3.12 (`py -3.11`, `python3.11`, `python`, then the same for 3.12), passes the caller's folder and shell on (`OPENAMIKA_CALLER_DIR`, `OPENAMIKA_CALLER_SHELL`) and runs `scripts/setup_core.py`; started from Explorer it waits for Enter |
+| `scripts/setup_core.py` | her brain, ears, memory and eyes: the optional Hugging Face token first, `envs/brain`, `envs/speech`, `envs/embed`, `envs/vision`, SenseVoiceSmall, bge-m3, Qwen3-VL-2B (or the models an existing `settings.json` names; their big weight files fetched resumably first), then `settings.json`, `brain/.env`; `--check`, `--cpu`, `--vision auto|on|off`, `--reinstall`, `--no-token-prompt` |
 | `scripts/setup_tts.py` | her voice, her Live2D model and the paper doll from Hugging Face (license prompt first) and the voice server in `vendor/tts-engine`; `--verify`, `--assets-only`, `--from-dir`, `--accept-voice-license`, `--skip-paper-doll`, `--cpu`, `--self-test` |
 | `scripts/MekaHime_Amika.manifest.json` | every file of `MekaHime/MekaHime_Amika` at the pinned revision with its size and SHA-256 (250 files, `VOICE_REV`), and in its `paper_doll` block the paper doll's 70 files (`live2d/Host/`, at `PAPER_DOLL_REV`) |
 | `scripts/download_sensevoice.py` | SenseVoiceSmall into `speech/models/` (6 files, SHA-256 pinned, ModelScope then Hugging Face; `--verify`) |
@@ -165,7 +168,7 @@ and the interactive map at `/flow`. Socket protocol: [brain/PROTOCOL.md](brain/P
 | `brain/po_contract.py` = `speech/po_contract.py` | the shared output contract: emotion keys, SFX, parsing, template self-check |
 | `brain/表层.txt`, `例子.txt`, `思考.txt`, `scenes.json` (+ `brain/defaults/`) | her persona (§1) |
 | `speech/api.py` | the gateway: pages, STT, `WS /ws/dialog`, TTS client, avatar registry, vision relay, control proxies |
-| `speech/hane_parser.py`, `sentence_splitter.py`, `tts_emotion.py`, `tts_pause.py`, `tts_sfx.py`, `voice_adapter.py`, `stt_carry.py` | streaming parse, sentence split, emotion tags, pauses, SFX tags, V2→V1 voice tags, carry-over of forced STT splits |
+| `speech/hane_parser.py`, `sentence_splitter.py`, `tts_emotion.py`, `tts_pause.py`, `tts_sfx.py`, `tts_text.py`, `voice_adapter.py`, `stt_carry.py` | streaming parse, sentence split, emotion tags, pauses, SFX tags, what her voice reads (capitals, dashes, ellipses), V2→V1 voice tags, carry-over of forced STT splits |
 | `speech/model.py`, `speech/utils/` | SenseVoice model code (FunAudioLLM, MIT); `speech/models/` holds the weights (not in git) |
 | `vendor/tts-engine/main.py` | her voice server (MIT, derived from the OpenSakura voice server); everything else in that folder is built by `setup_tts.py` |
 | `vision/vlm_service.py` | her eyes: a small local VLM describing the camera feed; `--check`, `--download` |
@@ -202,18 +205,32 @@ never to the CDN it redirects to, never to a mirror (with `HF_ENDPOINT` set it l
 not sent to a mirror` and downloads anonymously), and it never prints or stores it. License text:
 https://huggingface.co/MekaHime/MekaHime_Amika/blob/main/LICENSE
 
-Disk, measured after a full install (with her eyes): about 43 GB. The environments take ~15 GB, the voice server
-~8 GB, the Hugging Face cache ~13 GB (more than the models' own size: bge-m3 is fetched in both of its weight formats,
-and without symlink support Windows can keep a model's file twice), SenseVoiceSmall ~1 GB and pip's download cache
-~6 GB (`pip cache purge`, run with any of the environments' pythons, gives that back once the setup is done).
-Two CUDA torch builds are downloaded: 2.10.0 for the core environments, 2.9.1 for the voice server.
+Disk of a full install with her eyes, computed on 2026-11-09 from the pinned files and wheels (uv resolution of
+every requirements file for cp311-win_amd64; each wheel's unpacked size read from its zip directory; the model
+repositories' sizes from the Hub API): **about 37 GB**. The four core environments ~15.4 GB (three CUDA torch 2.10.0
+installs, 4.5 GB each), the voice server ~7.7 GB (its venv with torch 2.9.1 5.6 GB, the pretrained models 0.95 GB,
+G2PW 0.64 GB, ffmpeg 0.2 GB, fastText 0.13 GB, GPT-SoVITS), the models ~8 GB (SenseVoiceSmall 0.94 GB, bge-m3 2.3 GB,
+Qwen3-VL-2B 4.27 GB, her voice, model and paper doll 0.48 GB) and pip's download cache ~6.2 GB (`pip cache purge`, run
+with any of the environments' pythons, gives that back once the setup is done). Without her eyes: about 28 GB. One
+earlier install measured 43 GB: transformers then also fetched bge-m3's safetensors (2.3 GB) from the converter
+bot's pull request, which `setup_core.py` now stops (`DISABLE_SAFETENSORS_CONVERSION`). Downloads: ~11 GB for
+`setup_windows.ps1`, ~5.5 GB for `setup_tts.py`. Two CUDA torch builds are downloaded: 2.10.0 for the core
+environments, 2.9.1 for the voice server.
+
+Python: 3.11 is the tested one; 3.12 is allowed, since every pinned package of the five environments has a cp312
+wheel (or is the same pure-Python sdist 3.11 builds: jieba, crcmod, oss2, antlr4-python3-runtime, docopt, distance).
+3.13 and newer are refused: the voice server pins numpy 1.26.4 (GPT-SoVITS needs numpy<2), which has no cp313 wheel;
+the four core environments alone would resolve on 3.13.
 
 ## 5. Setup, step by step
 
 Prerequisites: Windows 10/11; an NVIDIA GPU (RTX 20-series or newer; 8 GB VRAM for her ears, memory and voice,
 16 GB with her eyes) with a recent driver; for her LLM an OpenRouter key (recommended) or, Fully Local, Ollama with a
 model of 27B or more and the GPU memory for it (§5.4); Python 3.11 64-bit (python.org, "Add python.exe to PATH", or
-`winget install -e --id Python.Python.3.11`); Git; ~45 GB free disk; 15–20 GB of downloads; 30–60 minutes. Clone
+`winget install -e --id Python.Python.3.11`; 3.12 works, 3.13 does not, §4); Git; ~40 GB free disk; ~16 GB of
+downloads; 30–60 minutes. The human README's STEP 1–7 is this same sequence: STEP 1 Python and Git, STEP 2 PowerShell
+in the folder she will live in, STEP 3 the clone (§5.1), STEP 4 `setup_windows.ps1` (§5.2), STEP 5 `setup_tts.py`
+(§5.3), STEP 6 `Start_OpenAmika.bat` (§5.5), STEP 7 the OpenRouter key pasted in her first-run window (§5.4). Clone
 into a short folder that OneDrive does not sync (the environments hold tens of thousands of files): keep the path
 under ~100 characters, because Windows cannot load some DLLs deep in the environments from a longer folder even with
 long paths enabled (`… DLL load failed while importing _box: The filename or extension is too long.`). Run the
@@ -232,7 +249,10 @@ All commands below run from that folder (`C:\OpenAmika`). PowerShell runs nothin
 name: a `.bat` there is `.\Start_OpenAmika.bat`, and a `.ps1` runs as `powershell -ExecutionPolicy Bypass -File …`
 (Windows' default execution policy refuses `scripts\setup_windows.ps1` typed alone).
 Clone rather than `Code → Download ZIP`: the ZIP unpacks into a nested folder (`OpenAmika-main\OpenAmika-main`),
-and Windows Defender quarantined it on download in the first days (§9).
+and Windows Defender quarantined it on download in the first days (§9). A ZIP still works from its inner folder: the
+setup recognises it (`setup_core.zip_outer`) and, whenever the window that ran it is elsewhere (the outer folder,
+`C:\Windows\System32`), prints `NOTE: Your window is in …` at the start and the exact `cd` line as step `0.` of
+`Done. Next:` (`cd /d` for cmd; Git Bash is told to use PowerShell). A ZIP folder has no git: it updates by hand (§5.7).
 
 ### 5.2 Her brain, ears, memory and eyes
 
@@ -240,12 +260,19 @@ and Windows Defender quarantined it on download in the first days (§9).
 powershell -ExecutionPolicy Bypass -File scripts\setup_windows.ps1        # add --cpu without an NVIDIA GPU
 ```
 
-It prints `[setup] using py -3.11`, then each step (pip's own output streams through; on a console pip shows its
-progress bar), and ends with:
+It prints `[setup] using py -3.11`, then asks once for an optional Hugging Face token (only on a real console, never
+on a pipe or the NUL device an agent's terminal has; hidden while pasted; Enter skips; one already in `HF_TOKEN` or a
+saved `hf auth login` is used without asking; `--no-token-prompt` skips it): a pasted token is checked with
+huggingface.co (`/api/whoami-v2`), set as `HF_TOKEN` for the run and saved where `hf auth login` saves it
+(`HF_TOKEN_PATH`, else `token` in `HF_HOME`), so `setup_tts.py` and later runs use it; the summary's row is `OK Hugging
+Face token  ...wxyz accepted by Hugging Face; saved in …` or `-- Hugging Face token  none (optional …)`. Never answer
+that question for the person with a token of yours. Then each step (pip's own output streams through; on a console
+pip shows its progress bar), and it ends with:
 
 ```
 ==============================================================================
 OpenAmika setup summary (909 s)
+  OK Hugging Face token  ...wxyz accepted by Hugging Face; saved in ...\.cache\huggingface\token, where `hf auth login` keeps it (delete that file to forget it)
   OK Python              3.11.9 (...\Python311\python.exe)
   OK GPU                 NVIDIA GeForce RTX 5080, 16 GB: CUDA 12.8 builds
   OK brain               envs\brain\Scripts\python.exe (Python 3.11.9, created; brain/requirements.txt installed)
@@ -287,6 +314,18 @@ in place takes about a minute.
   (`envs\<name>\python.exe`).
 - A folder longer than 100 characters prints `WARNING: <folder> is N characters long. Windows cannot load some
   program files (DLLs) deep in the environments from a folder that long …` before anything is installed.
+- The two Hugging Face models: `prefetch_weights` asks the Hub API (`/api/models/<repo>/revision/main?blobs=true`)
+  for the main commit and fetches the big weight files the loader reads (the top folder's `*.safetensors`, else
+  `pytorch_model*.bin`) into `models--<org>--<name>/snapshots/<commit>/` itself, through a `.part` file a re-run
+  continues, checked against the listed SHA-256, with a progress line every 10 s (`model.safetensors: 1,024 / 4,255
+  MB (24%), 8.1 MB/s, 3.2 GB left, about 7 min`; a slow anonymous download names the token). huggingface_hub 1.33
+  (what the environments get) downloads to a per-process temporary file and deletes it on failure, so without this an
+  interrupted 4.3 GB file started over. The loader (`embed_server.py --download`, `vlm_service.py --download`) then
+  fetches only the small files, with `DISABLE_SAFETENSORS_CONVERSION=1` (else transformers also downloads bge-m3's
+  safetensors, 2.3 GB, from the converter bot's pull request). SenseVoiceSmall resumes on ModelScope (it honours
+  Range) and shows MB/s and what is left too.
+- `--check` also reports a requirements file that changed since it was installed (`… changed since it was installed
+  into envs\brain: run this script without --check`), the case after a `git pull`.
 - Verify without installing anything: `powershell -ExecutionPolicy Bypass -File scripts\setup_windows.ps1 --check`
   (ends with `Her brain, ears, memory and eyes are installed.` or `Not ready: …`).
 
@@ -378,7 +417,8 @@ Done. Next:  .\Start_OpenAmika.bat   (or double-click it: her voice server start
   doll and the voice server are complete.` (without the doll while it is not installed) or one `!!` row per broken
   part, naming the files.
 - A re-run of a complete install downloads nothing and takes about half a minute; an interrupted download resumes
-  from its `.part` file.
+  from its `.part` file (`continuing at N MB`), and every 10 s a progress line shows MB/s, what is left and about how
+  long.
 
 ### 5.4 Her brain's LLM
 
@@ -387,7 +427,11 @@ first: in almost all cases it is the better setup, and it costs a few dollars a 
 
 - **Semi-Local (the default, recommended)**: the roles run on OpenRouter with the person's own key and the models
   she was tested with (§4). The person pastes the key in the first-run wizard on the Use page, or after
-  `OPENROUTER_API_KEY=` in `brain/.env` (the brain also accepts it on Setup → Brain).
+  `OPENROUTER_API_KEY=` in `brain/.env` (the brain also accepts it on Setup → Brain). A key saved on the page applies
+  at once, no restart (every OpenRouter call reads `OPENROUTER_API_KEY` when it is made), and the save answers with the
+  account's balance (`/api/v1/credits`, else the key's own limit from `/api/v1/auth/key`): `credits {ok, left, total,
+  used, empty, source}` and a note; `empty` (under a cent) means every reply would fail, because OpenRouter is
+  prepaid. `GET /api/build_f/openrouter_key?credits=1` shows it later (cached a minute; never the key itself).
 - **Fully Local**: every role on Ollama, no key. Only with a model of **27B parameters or more**; **70B or more**
   gives the full, reliable experience. A model under 27B may be really bad for her: it loses her character, forgets
   what the person told her and breaks her output contract (the surface's four lines, the deep's
@@ -503,6 +547,21 @@ Invoke-RestMethod -Method Post -Uri "$page/api/build_f/ollama/use" -ContentType 
   pulled — ollama pull gemma3:27b (…)`. The pre-flight checks that the model is pulled, not its size: the 27B rule
   and the memory table above are yours to apply.
 - Back to OpenRouter: Setup → Brain → OpenRouter → "Switch back to the OpenRouter preset".
+- The wizard and Setup → Brain show "She will not sound like herself. Use 27B or more, or the OpenRouter preset."
+  for a model under 27B parameters (Ollama's `parameter_size`, else the size in its name; `gemma4:26b`, the tested
+  mixture of experts, is exempt). It is a warning, not a refusal, and nothing checks her replies by script.
+
+**A model that left OpenRouter's catalog.** After its boot-time resume the brain reads OpenRouter's public model
+list (`/api/v1/models`) once, then at most every 30 minutes when a page asks: `GET /api/build_f/openrouter/catalog` →
+`{checked, checked_at, missing: [{role, model}], preset, preset_missing, error}`. A missing model is logged (`[models]
+OpenRouter no longer offers …`), red in the health light, and Setup → Brain offers "Switch back to the OpenRouter
+preset" (`POST /api/build_f/preset {"provider": "openrouter"}`). Offline, `checked` is false and nothing is called gone.
+
+**A reply that fails** puts the provider's first line in the chat log, for example `OpenRouter (HTTP 402):
+Insufficient credits … — OpenRouter is prepaid: add a few dollars at https://openrouter.ai/settings/credits, then talk
+to her again` (hints for 401, 402, 403, 404 "no endpoints", 429). The transport attaches it to the exception as
+`provider_detail` (`f_openrouter.describe_error`); the exception's type and message are unchanged, because memory jobs
+classify failures by them (`f_memory.TRANSIENT_ERROR`, `REJECTED_REQUEST`).
 
 ### 5.5 Check, then start
 
@@ -512,13 +571,22 @@ envs\brain\Scripts\python.exe launch.py --check     # starts nothing; one OK / -
 ```
 
 `--check` prints `OpenAmika pre-flight  <folder>`, rows such as `OK brain python`, `OK required files  all present`,
-`OK her clock  Asia/Tokyo · Wed 14:04 JST`, `OK brain port  5202 free` (or, while she runs, `OK brain port
+`OK her clock  Asia/Tokyo · Wed 14:04 JST`, `OK brain port  5202 free` (a bind test, not a connect: a port inside a
+range Windows reserved reads `reserved by Windows`) (or, while she runs, `OK brain port
 5202 held by this OpenAmika (running)`), `-- TTS (voice)  not running — will be started
 (vendor\tts-engine\.venv\Scripts\python.exe)`, `OK her voice  MekaHime_Amika · 69/69 emotion clips`,
 `OK Live2D model  Amika (AmikaV4.model3.json, 142 motions)`, `OK paper doll  Host · 64 motions — shown beside her
 while a task agent is switched on (Tools page)`, `OK brain_python imports  all importable`,
 `OK embedder check  embed_server check: torch …`, `OK vision check  vision check: all importable (…)`, then a count
-line and `result: ready` (exit 0) or `result: fix the !! lines above (-- lines are informational)` (exit 1). Rows for
+line, `her page: http://localhost:<chat_port>`, and `result: ready` (exit 0) or `result: fix the !! lines above (--
+lines are informational)` (exit 1). A port of hers that Windows refuses with WinError 10013 (an excluded range of
+Hyper-V, WSL2 or Docker Desktop: `netsh interface ipv4 show excludedportrange protocol=tcp`) is moved before
+`settings.json` is read, by `--check` and by every start alike: the next free port above it, outside every excluded
+range and away from her other ports, written to `settings.json` (`chat_port`, `brain_port`, `messengers_port`,
+`embedder.port`, `vision.port`, and `tts_url` with `services.tts`'s `--port` and health URL when that service starts
+her voice server; the old file stays as `settings.json.bak`); its row reads `-- web/speech port  53000 is reserved by
+Windows (excluded range 52950-53049: …) — moved to 53050 in settings.json (chat_port); her page is now
+http://localhost:53050`. A port a program holds is never moved (`!! … is in use by pid …`). Rows for
 Ollama appear when a role runs on it (§5.4), rows for her helpers when one is switched on (`agent hermes`, `hermes
 key`, `agent nanomuse`, §8.1). The same report is saved to `logs/preflight.json` and shown on the Setup
 page and in the health light.
@@ -530,7 +598,10 @@ logs/<name>.log`; red `exited with code N — see logs/<name>.log`. A normal sta
 10–60 s, the brain a few seconds, speech ~10–30 s; the browser opens when speech is up. The first start after the
 setup is slower: new environments spend a minute or more on their first imports (on fresh clones speech answered
 after 1 to 2 minutes, the longer one on a busy PC), so speech may read yellow `no answer after 90s — still running`
-first; it turns green and the browser opens when it answers (`launch.py --no-browser` never opens it).
+first; it turns green and the browser opens when it answers (`launch.py --no-browser` never opens it). The header of
+the dashboard shows the address she opens (a moved `chat_port` included). A launcher that fails (exit code not 0)
+started by `Start_OpenAmika.bat` prints `OpenAmika stopped with exit code N. The launcher log: <folder>\logs\launcher.log
+…` last and waits for Enter (the exception and its traceback are in that log); one that is stopped closes as before.
 
 ### 5.6 Other setups
 
@@ -547,6 +618,18 @@ first; it turns green and the browser opens when it answers (`launch.py --no-bro
   launcher's process handling and the `.bat` files are Windows-first.
 
 ### 5.7 Updating
+
+The person's way: stop her, double-click `Update_OpenAmika.bat` (README "Updating her"). `scripts/update_openamika.ps1`
+refuses while any of this folder's processes runs (`She is running. Stop her first …`, exit 1), zips `memory_f/`,
+`brain/memories/`, `settings.json`, `brain/.env`, `config/seed.json`, `ollama.json`, `voice_map.json`, `tools.json`,
+`messengers.json`, `build_f.json`, `word_replace.json`, `llm_roles.json`, `brain/*.txt` and `scenes.json` into
+`backups/update-<yyyyMMdd-HHmm>.zip` (git-ignored), runs `git stash`, `git pull --ff-only`, `git stash pop` (a file
+both sides changed keeps the person's version, `git checkout --theirs`, and the stash entry stays; the update's
+persona text is in `brain/defaults/`), then `setup_windows.ps1 --check` and `setup_tts.py --verify`, and the setups
+for real when either finds something new; the window waits for a key. A folder that is not a git clone (the ZIP) gets
+the ZIP steps (exit 2): unzip the new ZIP next to the old folder, copy `memory_f`, `brain\memories`, `settings.json`,
+`brain\.env` and the five git-ignored `config` files into it, run both setups there, start her. Nothing in the setups
+writes into `memory_f/` or `brain/memories/` (a test keeps it so). By hand, the same:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File Stop_OpenAmika.ps1   # stop her first (or Ctrl+C in her console)
@@ -592,7 +675,8 @@ workspace in `config/alibaba_models.json`), `GEMINI_API_KEY` (legacy embedder), 
 `auto_open_from_reflection`, `embedding_provider: "local"`, `embedding_url`, budgets), `llm_roles.json` (`options`,
 `presets`, `selections` for `surface` / `deep` / `reflection` / `memory_write`; Setup → Brain edits it),
 `openrouter_models.json` / `alibaba_models.json` / `pricing.json` (catalogs and prices; Ollama is priced at 0),
-`word_replace.json` (`stt_to_llm` fixes, `llm_to_tts` pronunciations incl. the wizard's `role: user_name` rule),
+`word_replace.json` (`stt_to_llm` fixes, `llm_to_tts` pronunciations incl. the wizard's `role: user_name` rule and
+the shipped chat-abbreviation rules at the end, `tts_keep_caps`: capitalised words her voice should keep spelling),
 `tools.json` (git-ignored; MCP servers, the helpers' URLs, keys and `autostart`, policies, `clerk_role`,
 `iot_disclaimer`; template `tools.example.json`; §8.1),
 `messengers.json` (git-ignored; bot tokens and allow-lists; template `messengers.example.json`), `ollama.json`
@@ -615,7 +699,9 @@ or breathing red *System Failures*; click it for the list. It polls: Brain, Memo
 OpenRouter) or Ollama (when one uses Ollama), Speech / STT, TTS (her voice), Live2D model, every non-green startup
 check from `logs/preflight.json`, and configured bots that cannot connect. The first-run wizard (until
 `onboarded` is true in `config/build_f.json`) asks the person's name (with a pronunciation guide for her voice), city
-and her clock, takes the OpenRouter key if `brain/.env` has none, and runs the same health check. The browser needs
+and her clock, takes the OpenRouter key if `brain/.env` has none (a green `✓ Key saved … · $N of credit left`, or why
+not), warns about an Ollama model under 27B, and runs the same health check. A failed reply's provider line goes into
+the Use page's chat log. The browser needs
 one click on the page before it allows her audio.
 
 ## 8. Optional add-ons and their rules
@@ -780,7 +866,7 @@ each entry below was checked against the code):
   into a nested folder (`…\Downloads\OpenAmika-1.0.0\OpenAmika-1.0.0`, `OpenAmika-main\OpenAmika-main`): from the
   outer folder `The argument 'scripts\setup_windows.ps1' to the -File parameter does not exist` and, later, `The term
   'envs\brain\Scripts\python.exe' is not recognized …` → `cd` into the inner folder, or move it to `C:\OpenAmika`
-  (§5.1); better, clone. The v1.0.0 zip also carries the older README with Miniconda steps (`conda create -y -p
+  (§5.1); better, clone. The setup itself now prints the exact `cd` line when its window is elsewhere. The v1.0.0 zip also carries the older README with Miniconda steps (`conda create -y -p
   envs\brain python=3.11`): `'conda' is not recognized as an internal or external command` and Anaconda's terms prompt
   belong to that guide, not to her → follow the current README; conda is not needed (`setup_windows.ps1` makes the
   environments; conda ones already made are used as they are, §5.2).
@@ -792,46 +878,56 @@ each entry below was checked against the code):
   antivirus exclusion for the person; let them decide.
 - **Downloads crawl at ~50 KB/s** during `setup_windows.ps1` (`BAAI/bge-m3`, `Qwen/Qwen3-VL-2B-Instruct`) or
   `setup_tts.py` → Hugging Face throttles unauthenticated downloads and refuses them past a quota (HTTP 429). A free
-  read token lifts it: `$env:HF_TOKEN = "hf_..."` in the same window before the setup (huggingface.co/settings/tokens;
-  `huggingface_hub` reads the variable, `setup_tts.py` says where its token came from). Check it is not the line itself
+  read token lifts it: the person pastes one when `setup_core.py` asks at its start (saved for later runs), or
+  `$env:HF_TOKEN = "hf_..."` in the same window before the setup (huggingface.co/settings/tokens; `huggingface_hub`
+  reads the variable, `setup_tts.py` says where its token came from). The progress lines show the speed and name the
+  token when a Hugging Face download runs under ~300 KB/s; a re-run continues the `.part` files. Check it is not the line itself
   first (one "slow setup" was a game updating in the background). SenseVoiceSmall comes from ModelScope, unaffected.
 - **`ERROR: [Errno 13] error while attempting to bind on address ('127.0.0.1', 53000): an attempt was made to access a
   socket in a way forbidden by its access permissions`** (in the dashboard's speech row or `logs\speech.log`; the
-  browser never opens; `launch.py --check` still says the port is free, because it only connects) → Windows reserved
+  browser never opens; `launch.py --check` used to say the port was free, because it only connected) → Windows reserved
   that port for Hyper-V / WSL2 / Docker Desktop: `netsh interface ipv4 show excludedportrange protocol=tcp` lists the
   ranges. Set `chat_port` in `settings.json` to a port outside them (ports below 49152 rarely are) and start again:
   the URL she opens, `Stop_OpenAmika.ps1` and `Tailscale_Serve_OpenAmika.bat` all read `chat_port`. The same error
   on 5202, 8011, 8014 or 8002 → `brain_port`, `embedder.port`, `vision.port`, the TTS port (§6). (`net stop winnat`
   then `net start winnat` as administrator frees the dynamic ranges until the next reboot; the new port is the
-  lasting fix.)
+  lasting fix.) Since 2026-11-09 the launcher does this itself, at `--check` and at every start (§5.5): the dashboard
+  and `--check` name the new port and `settings.json.bak` holds the old file.
 - **The key is pasted, but the light says `OpenRouter key  no key saved`** (or `launch.py --check`: `-- API keys  no
   OpenRouter key yet`) → the brain saves it into `brain/.env` and applies it at once (§5.4). Look (never print) for a
   line `OPENROUTER_API_KEY=…` in `brain/.env`: present → stop her and start her again (the light caught up after a
   restart for everyone who reported this); absent → the brain was not answering when it was saved: paste it on
-  Setup → Brain, or put it in the file by hand.
+  Setup → Brain, or put it in the file by hand. A key saved on the page now applies at once and answers with the
+  account's balance (§5.4).
 - **The key is saved, and every reply is an error.** Three causes seen: the OpenRouter account has **no credits** (a
   key alone is not enough; OpenRouter is prepaid: people added $5–10 and she answered; the Use page's *Session cost*
   tile stays at 0 until then); a model chosen on Setup → Brain that **OpenRouter no longer offers** (one person had
   picked a `qwen3-235b` entry that had left the catalog) → Setup → Brain → *Switch back to the OpenRouter preset*;
   an error right after **switching models or keys** → stop her and start her again. OpenRouter's own answer is in
-  `logs\brain.log`.
+  `logs\brain.log`, and now also in the Use page's chat log (`OpenRouter (HTTP 402): …`); the balance shows next to the
+  saved key and a model gone from the catalog is red in the health light (§5.4).
 - **Fully Local with a model under 27B** (`qwen3:4b-instruct` and `qwen3:14b` were the ones tried) → she says only her
   catchphrase ("You Holy Big Fat Ass"), answers in one line, gets stuck on one subject, **switches to Chinese** in
   the middle of a conversation (her prompts are Chinese; a weak model drifts into them), or takes 10 s a reply → not a
   fault to debug: §5.4 (27B or more, or Semi-Local). On a 16 GB card or less Fully Local is not an option; Semi-Local
-  is.
+  is. The wizard and Setup → Brain now warn before such a model is used.
 - **No NVIDIA card** (AMD, Intel, Apple) → her ears, memory and voice need CUDA for speed, not for correctness:
   `--cpu` for both setups (§5.6), eyes off. Whether Ollama uses an AMD card is Ollama's own business (its ROCm
   builds), separate from her parts. Otherwise the hosted version at mekahime.com/amika.
 - **Linux** → unsupported (§5.6), but one person ran her there (on a PS5 running Linux): `python scripts/setup_core.py`
   directly (no `.ps1`, no `.bat`), `HF_TOKEN` exported, the interpreters in `settings.json` pointed at
   `envs/<name>/bin/python`, then `python launch.py`. Expect to fix paths yourself.
-- **The console closes before the error can be read** (`Start_OpenAmika.bat` double-clicked) → run it from a
+- **The console closes before the error can be read** (`Start_OpenAmika.bat` double-clicked) → since 2026-11-09 the
+  launcher's window stays open after a failure and names `logs\launcher.log` (§5.5). Otherwise run it from a
   PowerShell window in the folder (`.\Start_OpenAmika.bat`) after stopping any earlier instance: the dashboard names
   the red row and its `logs\<name>.log`.
 - **Her voice spells an all-caps word letter by letter** (`YOUR` → Y-O-U-R) → the voice engine reads capitals as an
-  acronym; it is the LLM writing in capitals, not the setup. A pronunciation rule in `config/word_replace.json`
-  (`llm_to_tts`: `{"from": "YOUR", "to": "your", "ci": false}`) catches a word that keeps coming back.
+  acronym; it is the LLM writing in capitals, not the setup. `speech/tts_text.py` now lower-cases a word of three or
+  more capitals before the voice step (acronyms such as TTS, GPU, NVIDIA, RTX stay, and so do the ones in
+  `"tts_keep_caps"` of `config/word_replace.json`, and words with a digit attached), turns dashes into commas and an
+  ellipsis ("dot dot dot") into a full stop. A word that must be said another way still gets an `llm_to_tts` rule.
+- **Python 3.13 or 3.14 only** → `[setup] Python 3.11 was not found. … Python 3.13 and newer do not work: her voice
+  server needs numpy 1.26.4 …` → install 3.11 next to it (3.12 also works); both can stay installed.
 - **Any drive is fine**: `D:\OpenAmika` works like `C:\OpenAmika` (the launchers use their own folder, `%~dp0`); only
   the path's length and OneDrive matter (§5).
 
@@ -993,7 +1089,7 @@ envs\brain\Scripts\python.exe -m pip install -r requirements-dev.txt
 envs\brain\Scripts\python.exe -B -m pytest tests -k "not live" -p no:cacheprovider -q
 ```
 
-About 490 offline tests: the output contract and both streaming parsers (parity), prompt assembly, memory, the usage
+About 560 offline tests: the output contract and both streaming parsers (parity), prompt assembly, memory, the usage
 ledger, the control proxies, Fully Local (every role, her surface turn included, on the Ollama transport), the tools
 clerk (with agent autostart and health), the agents bridge against in-process
 fakes of Hermes and nanoMuse (`tests/test_agents_bridge.py`: jobs, approvals, questions, stop, health with
@@ -1003,7 +1099,12 @@ the bridge's own steps), the IoT safety statement,
 the launcher pre-flight (`tests/test_launch_preflight.py`: a fresh checkout, Ollama, a foreign voice server on her
 port, her own running ports, the time-zone database, the helpers' start commands, Hermes's key, the paper doll, the
 shipped `tools.example.json`), `setup_core.py` (`tests/test_setup_core.py`: a re-run after an interrupted first run,
-damaged packages), the SenseVoice downloader, and `setup_tts.py` against a local stand-in for Hugging Face
+damaged packages, the ZIP's nested folder and the cd line, the Hugging Face token question, resumable weight
+downloads, Python 3.11 / 3.12 / 3.13), the launcher's ports (`tests/test_launch_ports.py`: a bind not a connect,
+WinError 10013, the excluded ranges, a reserved port moved in `settings.json`, the window that stays open after a
+failure), what her voice reads (`tests/test_tts_text.py`), the OpenRouter balance, catalog check and provider lines
+(`tests/test_openrouter_feedback.py`), `Update_OpenAmika.bat` (`tests/test_update_script.py`), the SenseVoice
+downloader, and `setup_tts.py` against a local stand-in for Hugging Face
 (`tests/test_setup_tts.py`: public, private with and without a token, the CDN and a mirror never seeing the token,
 resume, verify, repair, `--from-dir` (also a copy without the doll), banks.json, the paper doll at its own revision
 and before it is pinned).
