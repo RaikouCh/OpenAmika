@@ -2,7 +2,8 @@
 rem Starts OpenAmika in ONE console window: grace cleanup of an earlier instance, pre-flight lights,
 rem then every service and component with its output streamed there (full logs in logs\).
 rem Uses the brain python from settings.json to run launch.py; Ctrl+C in that window (or
-rem Stop_OpenAmika.bat) stops everything the launcher started.
+rem Stop_OpenAmika.bat) stops everything the launcher started. If the launcher fails (exit code not 0),
+rem its window stays open: the error, then the path of logs\launcher.log, then "Press Enter".
 cd /d "%~dp0"
 chcp 65001 >nul
 if not exist "settings.json" (
@@ -27,5 +28,8 @@ if not exist "%PY%" (
     pause
     exit /b 1
 )
+rem the launcher's window waits for Enter after a failure instead of closing (launch.py keep_window_open)
+set "OPENAMIKA_PAUSE_ON_ERROR=1"
 start "OpenAmika" "%PY%" -X utf8 "%~dp0launch.py" %*
-echo OpenAmika is starting in its own window (the web UI opens when speech is ready: http://localhost:53000).
+echo OpenAmika is starting in its own window. Your browser opens her page when she is ready; its address is at the
+echo top of that window (http://localhost:53000 unless Windows reserved that port and she moved to another one).
