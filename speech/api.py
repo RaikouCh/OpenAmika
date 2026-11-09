@@ -485,9 +485,45 @@ async def _retire_wiped_sessions(backup_id=None):
             pass
 
 
+def _reset_options(payload, max_wait_s=20):
+    """(force, wait_s) of a wipe / reset-everything body (2026-11-09, item 49). wait_s: wait up to that long for her
+    to finish first (the page's first attempt: one short wait). force: she stops what she is doing — busy sessions no
+    longer refuse it, the brain stops her turns and reflections (f_reset). HTTPException 400 when malformed."""
+    force, wait_s = payload.get("force", False), payload.get("wait_s", 0)
+    if not isinstance(force, bool) or isinstance(wait_s, bool) or not isinstance(wait_s, (int, float)) \
+            or not 0 <= wait_s <= max_wait_s:
+        raise HTTPException(status_code=400, detail=f"force must be true or false, wait_s 0 to {max_wait_s} seconds.")
+    return force, wait_s
+
+
+async def _wait_sessions_idle(wait_s, step=0.2):
+    """Up to wait_s seconds for every dialog session to go idle (her audio played out, her turn ended)."""
+    deadline = asyncio.get_running_loop().time() + wait_s
+    while any(_build_f_session_busy(s) for s in list(_dialog_sessions)):
+        if asyncio.get_running_loop().time() >= deadline:
+            return False
+        await asyncio.sleep(step)
+    return True
+
+
+async def _brain_refusal(response, fallback):
+    """The brain's own words for a refused wipe/reset (400/403/409); a 409 as {code, message}, so the page can offer
+    the forced version (f_reset answers code "busy" and what still runs)."""
+    try:
+        data = await response.json()
+    except Exception:
+        data = None
+    error = data.get("error") if isinstance(data, dict) else None
+    message = error if isinstance(error, str) and error else fallback
+    if response.status == 409:
+        return {"code": "busy", "message": message}
+    return message
+
+
 @app.post("/api/build_f/wipe")
 async def build_f_wipe(request: Request):
-    """Confirmed same-origin memory reset under the shared service-control gate."""
+    """Confirmed same-origin memory reset under the shared service-control gate. Body: {"confirmation": "WIPE"}, and
+    optionally "wait_s" and "force" (_reset_options)."""
     global _wipe_in_progress
     # Uvicorn applies forwarded scheme only for its configured trusted proxy
     # addresses (loopback by default). Never trust raw forwarded headers here.
@@ -498,33 +534,41 @@ async def build_f_wipe(request: Request):
         raise HTTPException(status_code=403, detail="Memory reset confirmation header missing.")
     if request.headers.get("content-type", "").split(";", 1)[0].strip().lower() != "application/json":
         raise HTTPException(status_code=415, detail="Memory reset requires JSON.")
-    if _wipe_in_progress or any(_build_f_session_busy(s) for s in list(_dialog_sessions)):
+    if _wipe_in_progress:
         raise HTTPException(status_code=409, detail="Amika is busy. Wait for conversation, speech, memory updates and service controls to finish.")
+    body = await request.body()
+    if len(body) > 1024:
+        raise HTTPException(status_code=400, detail="Invalid memory reset request.")
+    try:
+        payload = json.loads(body)
+    except (ValueError, UnicodeError):
+        raise HTTPException(status_code=400, detail="Invalid memory reset request.") from None
+    if not isinstance(payload, dict) or payload.get("confirmation") != "WIPE":
+        raise HTTPException(status_code=400, detail="Type WIPE to confirm the memory reset.")
+    force, wait_s = _reset_options(payload)
+    if not force:
+        await _wait_sessions_idle(wait_s)
     # No await between the busy check and admission. New dialog inputs and
-    # other controls cannot race the body read or the backend request.
+    # other controls cannot race the backend request.
+    if _wipe_in_progress or (not force and any(_build_f_session_busy(s) for s in list(_dialog_sessions))):
+        raise HTTPException(status_code=409, detail={"code": "busy", "message": "Amika is busy: she is still speaking, "
+                            "listening or applying a setting. Wait a few seconds and try again, or force it (she stops what she is doing)."})
     _wipe_in_progress = True
     dispatched = False
     try:
-        body = await request.body()
-        if len(body) > 1024:
-            raise HTTPException(status_code=400, detail="Invalid memory reset request.")
-        try:
-            payload = json.loads(body)
-        except (ValueError, UnicodeError):
-            raise HTTPException(status_code=400, detail="Invalid memory reset request.") from None
-        if not isinstance(payload, dict) or payload.get("confirmation") != "WIPE":
-            raise HTTPException(status_code=400, detail="Type WIPE to confirm the memory reset.")
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60)) as client:
+        forward = {"confirmation": "WIPE", **({"force": True} if force else {}), **({"wait_s": wait_s} if wait_s else {})}
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=90)) as client:
             dispatched = True
             async with client.post(
                 HANE_URL.rstrip("/") + "/api/build_f/wipe",
-                json={"confirmation": "WIPE"},
+                json=forward,
                 headers={"X-Build-F-Action": "wipe-memory"},
                 allow_redirects=False,
             ) as response:
                 if response.status in (400, 403, 409):
-                    detail = "Amika is busy. Wait for conversation, speech and memory updates to finish, then try again." if response.status == 409 else "Memory reset was refused by the brain."
-                    raise HTTPException(status_code=response.status, detail=detail)
+                    fallback = ("Amika is busy. Wait for conversation, speech and memory updates to finish, then try again."
+                                if response.status == 409 else "Memory reset was refused by the brain.")
+                    raise HTTPException(status_code=response.status, detail=await _brain_refusal(response, fallback))
                 if response.status != 200:
                     raise ValueError("Brain reset outcome unconfirmed")
                 result = await response.json()
@@ -547,8 +591,8 @@ async def build_f_wipe(request: Request):
 @app.post("/api/build_f/reset")
 async def build_f_reset(request: Request):
     """Confirmed same-origin "reset everything": the brain wipes her memory (backup kept), puts the shipped
-    persona files back and clears your names/city, so the first-run wizard plays again. Same gate and the
-    same session retirement as the memory wipe (build_f_wipe stays self-contained for its tests)."""
+    persona files back and clears your names/city, so the first-run wizard plays again. Same gate, the same
+    waiting / forcing (_reset_options) and the same session retirement as the memory wipe."""
     global _wipe_in_progress
     expected_origin = f"{request.url.scheme}://{request.url.netloc}"
     if request.headers.get("origin") != expected_origin:
@@ -557,33 +601,39 @@ async def build_f_reset(request: Request):
         raise HTTPException(status_code=403, detail="Reset confirmation header missing.")
     if request.headers.get("content-type", "").split(";", 1)[0].strip().lower() != "application/json":
         raise HTTPException(status_code=415, detail="Reset requires JSON.")
-    if _wipe_in_progress or any(_build_f_session_busy(s) for s in list(_dialog_sessions)):
+    if _wipe_in_progress:
         raise HTTPException(status_code=409, detail="Amika is busy. Wait for conversation, speech, memory updates and service controls to finish.")
+    body = await request.body()
+    if len(body) > 1024:
+        raise HTTPException(status_code=400, detail="Invalid reset request.")
+    try:
+        payload = json.loads(body)
+    except (ValueError, UnicodeError):
+        raise HTTPException(status_code=400, detail="Invalid reset request.") from None
+    if not isinstance(payload, dict) or payload.get("confirmation") != "RESET":
+        raise HTTPException(status_code=400, detail="Type RESET to confirm the full reset.")
+    force, wait_s = _reset_options(payload)
+    if not force:
+        await _wait_sessions_idle(wait_s)
+    if _wipe_in_progress or (not force and any(_build_f_session_busy(s) for s in list(_dialog_sessions))):
+        raise HTTPException(status_code=409, detail={"code": "busy", "message": "Amika is busy: she is still speaking, "
+                            "listening or applying a setting. Wait a few seconds and try again, or force it (she stops what she is doing)."})
     _wipe_in_progress = True
     dispatched = False
     try:
-        body = await request.body()
-        if len(body) > 1024:
-            raise HTTPException(status_code=400, detail="Invalid reset request.")
-        try:
-            payload = json.loads(body)
-        except (ValueError, UnicodeError):
-            raise HTTPException(status_code=400, detail="Invalid reset request.") from None
-        if not isinstance(payload, dict) or payload.get("confirmation") != "RESET":
-            raise HTTPException(status_code=400, detail="Type RESET to confirm the full reset.")
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60)) as client:
+        forward = {"confirmation": "RESET", **({"force": True} if force else {}), **({"wait_s": wait_s} if wait_s else {})}
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=90)) as client:
             dispatched = True
             async with client.post(
                 HANE_URL.rstrip("/") + "/api/build_f/reset",
-                json={"confirmation": "RESET"},
+                json=forward,
                 headers={"X-Build-F-Action": "reset-all"},
                 allow_redirects=False,
             ) as response:
-                result = await response.json() if response.content_type == "application/json" else None
                 if response.status in (400, 403, 409):
-                    detail = (result.get("error") if isinstance(result, dict) and result.get("error")
-                              else "Reset was refused by the brain.")
-                    raise HTTPException(status_code=response.status, detail=detail)
+                    raise HTTPException(status_code=response.status,
+                                        detail=await _brain_refusal(response, "Reset was refused by the brain."))
+                result = await response.json() if response.content_type == "application/json" else None
                 if response.status != 200:
                     raise ValueError("Brain reset outcome unconfirmed")
         if not isinstance(result, dict) or result.get("ok") is not True or not isinstance(result.get("backup_id"), str) or not result["backup_id"]:
@@ -690,6 +740,49 @@ async def build_f_preset(request: Request):
                                    "selection_fallback", "applied_preset"))
 
 
+@app.post("/api/build_f/unlock")
+async def build_f_unlock(request: Request):
+    """Unlock (2026-11-09, item 32): the brain retires the requests no running work will finish, recovers orphaned
+    memory jobs and stops what she is doing; here every session's turn and audio end too (the page stops playing), so
+    nothing stale keeps a model switch or a wipe refusing. The page then repeats the refused switch with force."""
+    result = await _build_f_control(request, "/api/build_f/unlock", "unlock",
+                                    ("ok", "retired_requests", "recovered_jobs", "stopped", "still_running"),
+                                    check_busy=False, timeout=20)
+    for session in list(_dialog_sessions):
+        stop = getattr(session, "stop_her", None)
+        if stop is not None:
+            try:
+                await stop()
+            except Exception:
+                pass
+    return result
+
+
+@app.get("/api/build_f/conversation")
+async def build_f_conversation_get():
+    """How often she remarks on a silence (silence_remarks: off | rare | normal; config/build_f.json)."""
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as client:
+            async with client.get(HANE_URL.rstrip("/") + "/api/build_f/conversation", allow_redirects=False) as response:
+                if response.status != 200:
+                    raise HTTPException(status_code=503, detail="Conversation settings are unavailable.")
+                payload = await response.json()
+        if not isinstance(payload, dict) or payload.get("ok") is not True:
+            raise ValueError("Unexpected conversation settings")
+        return {key: payload.get(key) for key in ("ok", "silence_remarks", "choices", "interval_s")}
+    except HTTPException:
+        raise
+    except (aiohttp.ClientError, asyncio.TimeoutError, ValueError):
+        raise HTTPException(status_code=503, detail="Conversation settings are unavailable (is the brain running?).") from None
+
+
+@app.post("/api/build_f/conversation")
+async def build_f_conversation_set(request: Request):
+    """A settings change only (no turn, no memory): allowed while she talks."""
+    return await _build_f_control(request, "/api/build_f/conversation", "conversation",
+                                  ("ok", "silence_remarks", "choices", "interval_s"), check_busy=False)
+
+
 async def _build_f_control(request, route, action, allowed_fields, max_body=8192, check_busy=True, base=None,
                            timeout=10, precheck=None):
     """base: the service the control goes to (the brain unless given — the messengers service has its own API).
@@ -703,9 +796,12 @@ async def _build_f_control(request, route, action, allowed_fields, max_body=8192
         raise HTTPException(status_code=403, detail="Use the OpenAmika page for this action.")
     if request.headers.get("content-type", "").split(";", 1)[0].strip().lower() != "application/json":
         raise HTTPException(status_code=415, detail="JSON is required.")
-    # check_busy=False: actions that touch nothing of hers (switching a plug) may run while she talks
-    if _wipe_in_progress or (check_busy and any(_build_f_session_busy(s) for s in list(_dialog_sessions))):
-        raise HTTPException(status_code=409, detail="Wait for Amika to finish speaking, updating memory and applying service controls.")
+    # check_busy=False: actions that touch nothing of hers (switching a plug) may run while she talks. The header
+    # X-Build-F-Force: 1 is the page's model switch after Unlock: what she is saying keeps the model it started with.
+    forced = request.headers.get("x-build-f-force") == "1"
+    if _wipe_in_progress or (check_busy and not forced and any(_build_f_session_busy(s) for s in list(_dialog_sessions))):
+        raise HTTPException(status_code=409, detail={"code": "busy", "message": "Wait for Amika to finish speaking, "
+                            "updating memory and applying service controls, or press Unlock (she stops what she is doing)."})
     _wipe_in_progress = True
     try:
         body = await request.body()
@@ -1328,6 +1424,12 @@ class HaneClient:
         async def disconnect():
             self._connected = False
             logger.info("[hane] disconnected")
+            lost = getattr(self.session, "_brain_lost", None)       # a turn the brain was answering ends here
+            if lost is not None:
+                try:
+                    await lost()
+                except Exception as e:
+                    logger.debug(f"[hane] brain-lost cleanup failed: {e}")
 
         for evt in ("begin", "surface_chunk", "surface_done",
                     "deep_chunk", "deep_done", "end", "error"):
@@ -4178,6 +4280,32 @@ class DialogSession:
             await self._do_commit(cut_ms=_now_ms() if self._state == "SPEAKING" else None)
         self._reset_utterance()
 
+    async def stop_her(self):
+        """Unlock (2026-11-09): the brain stopped her turn; end it here as well and stop her audio on the page, so no
+        stale turn or clip keeps a control refusing ("busy" until the page was reloaded)."""
+        turn_id = self._committed_turn_id
+        ended = turn_id is not None and not self._ai_end_received
+        self._ai_end_received = True
+        self._tts_sentence_queue.clear()
+        self._tts_inflight = None            # a clip still coming back from the TTS is dropped (task id mismatch)
+        self._tts_playing = None
+        self._tts_pending_play.clear()
+        await self._send({"type": "stop_audio"})
+        if ended:
+            await self._send({"type": "ai_end", "turn_id": turn_id})
+
+    async def _brain_lost(self):
+        """The brain's connection dropped mid-turn (a crash, a restart): that turn never ends now. End it here, so the
+        page stops waiting and the wipe / model-switch busy checks stop counting it (they answered "busy" until the page
+        was reloaded, 2026-11-09). What she said so far still plays."""
+        turn_id = self._committed_turn_id
+        if turn_id is None or self._ai_end_received or getattr(self, "_wipe_retired", False):
+            return
+        self._ai_end_received = True
+        await self._send({"type": "ai_error", "turn_id": turn_id,
+                          "message": "Her brain stopped while answering (a crash or a restart). Say it again in a moment."})
+        await self._send({"type": "ai_end", "turn_id": turn_id})
+
     # ------------------- round telemetry (TELEMETRY_SPEC §1.2) ------------------- #
     # Everything below is bookkeeping on TimelineBook (dict updates) plus one debounced
     # background sender per session. Nothing here is awaited on the STT / brain / TTS path.
@@ -4365,8 +4493,18 @@ async def ws_dialog(ws: WebSocket):
             if session._wipe_retired:
                 break
             if _wipe_in_progress:
-                await session._send({"type": "ai_error", "message": "A service control is in progress. This input was not sent; try again when it finishes."})
-                continue
+                # Her playback acks still count during a control: they start nothing, and dropping one left her clip
+                # "playing" forever, so every later wipe or model switch answered "busy" (2026-11-09).
+                kind = None
+                if msg.get("text") is not None:
+                    try:
+                        peek = json.loads(msg["text"])
+                        kind = peek.get("type") if isinstance(peek, dict) else None
+                    except json.JSONDecodeError:
+                        pass
+                if kind not in ("tts_playing", "tts_finished"):
+                    await session._send({"type": "ai_error", "message": "A service control is in progress. This input was not sent; try again when it finishes."})
+                    continue
             session._input_busy = True
             if msg.get("text") is not None:
                 try:

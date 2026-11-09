@@ -241,6 +241,10 @@ class MemoryRuntime:
         self._closed = False
         self._reset_pending = False
         self._active_retrievals = 0
+        # The wipe fence: wipe() counts up, under every lock it holds. Work that began before a wipe (a memory write
+        # or a retrieval still waiting on its provider when a forced wipe went ahead without it) compares its own count
+        # with this one before every write and drops what it brings back: nothing from before reaches the empty store.
+        self._wipes = 0
         # Automatic bounded retry (module docstring). retry_gate() -> bool is set by the bridge: False while
         # a conversation turn or reflection is active, when no automatic retry may start. on_auto_retry() is
         # called after a retry was scheduled (the bridge wakes its timer). _retry_due: job file name -> due
@@ -426,24 +430,35 @@ class MemoryRuntime:
         if self._closed:
             raise RuntimeError("Memory runtime is closed")
 
-    def wipe(self, backup_dir):
+    def wipe(self, backup_dir, *, timeout=0.0, force=False):
         """Back up this profile's memory and atomically install an empty state.
 
-        Refuses active work without waiting. No calls are made to either model
+        Refuses active work, after waiting up to `timeout` seconds for its locks. No calls are made to either model
         callback. If a filesystem error interrupts the operation, new work is
         blocked and the durable transaction completes during the next startup.
         The caller separately owns recent conversation/thought history and the
         usage ledger; this method touches neither.
+
+        force (the forced wipe, "she stops what she is doing"): a memory write still waiting on its model and a
+        retrieval between its steps no longer refuse the wipe. They are fenced off instead (self._wipes): whatever
+        they bring back afterwards is dropped, never written into the empty store. The state lock and the query lock
+        are still waited for: a snapshot or query-cache write in progress always finishes first.
         """
+        deadline = time.monotonic() + max(0.0, float(timeout or 0.0))
         acquired = []
         try:
             for lock in (self._query_lock, self._worker_lock, self._lock):
-                if not lock.acquire(blocking=False):
+                remaining = deadline - time.monotonic()
+                if force and lock is self._worker_lock:
+                    remaining = min(remaining, 1.0)     # a write waiting on its model is fenced off, not waited for
+                if lock.acquire(timeout=remaining) if remaining > 0 else lock.acquire(blocking=False):
+                    acquired.append(lock)
+                elif not (force and lock is self._worker_lock):
                     raise MemoryBusyError("Memory is busy retrieving or saving; wait for the current turn to finish")
-                acquired.append(lock)
             self._require_ready()
-            if self._active_retrievals:
+            if self._active_retrievals and not force:
                 raise MemoryBusyError("Memory retrieval is still active; wait for the current turn to finish")
+            self._wipes += 1              # the fence: nothing begun before this point writes into the new store
             self.settle(force=True)       # B: what was ingested goes into the backup's snapshot, not the void
             backup = self._validated_backup(backup_dir)
             names = ("state.json", "jobs", "query_cache", "quarantine")
@@ -632,6 +647,30 @@ class MemoryRuntime:
             _write(self.totals_path, self._totals)
             self.startup_notes.append(f"{archived} finished memory job file(s) moved to jobs/completed")
 
+    def recover_orphans(self):
+        """Jobs left in a dispatch state ("extracting", "embedding") while no memory write runs: the worker that held
+        them ended without recording an outcome. They count as pending, which refuses the model switch, until the next
+        restart recovers them (_recover_jobs); this does the same now (Unlock): retried automatically, else blocked.
+        Returns how many; 0 while a memory write is running (its job is not an orphan)."""
+        if not self._worker_lock.acquire(blocking=False):
+            return 0
+        try:
+            recovered = 0
+            with self._lock:
+                if self._closed or self._reset_pending:
+                    return 0
+                for path in sorted(self.jobs_dir.glob("*.json")):
+                    job = _read(path)
+                    if job["state"] not in DISPATCH_STATES:
+                        continue
+                    if self._schedule_retry(path, job, RESTART_ERROR) is None:
+                        job.update(state="blocked", error=RESTART_ERROR, blocked_at=_now())
+                    _write(path, job)
+                    recovered += 1
+            return recovered
+        finally:
+            self._worker_lock.release()
+
     @staticmethod
     def _public_event(event):
         # Explicit whitelist prevents raw model thoughts or transport metadata
@@ -663,13 +702,16 @@ class MemoryRuntime:
             raise ValueError("Empty conversation event")
         return result
 
-    def archive(self, event):
-        """Archive original evidence now, enqueue enrichment, and make no API calls."""
+    def archive(self, event, epoch=None):
+        """Archive original evidence now, enqueue enrichment, and make no API calls. epoch: self._wipes when the
+        caller read the event; a wipe since then drops it (that conversation was wiped)."""
         public = self._public_event(event)
         ident = _digest(public["id"])
         path = self.jobs_dir / (ident + ".json")
         with self._lock:
             self._require_ready()
+            if epoch is not None and epoch != self._wipes:
+                return {"id": public["id"], "queued": False, "duplicate": False, "wiped": True}
             existing = self.model.event_by_id.get(public["id"])
             if existing is not None:
                 if existing != public:
@@ -694,8 +736,10 @@ class MemoryRuntime:
         self.settle()
         return {"id": public["id"], "queued": True, "duplicate": False}
 
-    def _block(self, path, job, error):
+    def _block(self, path, job, error, epoch=None):
         with self._lock:
+            if epoch is not None and epoch != self._wipes:
+                return                    # wiped meanwhile: the job went into the backup as it was
             message = f"{type(error).__name__}: {error}"[:500]
             due = self._schedule_retry(path, job, message)
             if due is None:
@@ -757,19 +801,30 @@ class MemoryRuntime:
         except Exception:
             return contextlib.nullcontext()
 
-    def _process_job(self, path):
+    def _process_job(self, path, epoch=None):
+        """One job, resumed at its last durable stage. epoch: self._wipes when the caller listed the job; every write
+        below is made under the state lock and only while no wipe happened since (the wipe fence)."""
         with self._lock:
+            if epoch is None:
+                epoch = self._wipes
+            if epoch != self._wipes or not path.exists():
+                return False
             job = _read(path)
             state = job["state"]
             if self._closed or state not in {"queued", "extraction_received", "facts_ready",
                                               "embedding_received", "vectors_ready"} \
                     or any(waiting == path for waiting, _ in self._ingested):
                 return False
+
+        def fenced():
+            return epoch != self._wipes
         try:
             if state == "queued":
                 if self.extract_fn is None:
                     return False
                 with self._lock:
+                    if fenced():
+                        return False
                     job.update(state="extracting", extraction_started_at=_now())
                     _write(path, job)
                 with self._job_scope(job):
@@ -780,6 +835,8 @@ class MemoryRuntime:
                 # Persist the callback result before any validation or subsequent
                 # billable operation. Root's callback also journals raw HTTP data.
                 with self._lock:
+                    if fenced():
+                        return False
                     job.update(extraction_result=result, state="extraction_received")
                     _write(path, job)
                 state = "extraction_received"
@@ -795,6 +852,8 @@ class MemoryRuntime:
                 accepted = [fact for fact in facts if fact["id"] in accepted_ids]
                 rejected = _compact_rejections(result.get("rejected", [])) if isinstance(result, dict) else []
                 with self._lock:
+                    if fenced():
+                        return False
                     job.update(facts=accepted, quarantined=rejected + probe.excluded_records, state="facts_ready")
                     _write(path, job)
                 state = "facts_ready"
@@ -804,7 +863,7 @@ class MemoryRuntime:
                 items = [(job["event"]["id"], event_document(job["event"]))]
                 items.extend((fact["id"], record_document(fact)) for fact in job["facts"])
                 with self._lock:
-                    if self._closed:
+                    if self._closed or fenced():
                         return False
                     job.update(state="embedding", embedding_started_at=_now(),
                                embedding_ids=[ident for ident, _ in items])
@@ -812,15 +871,21 @@ class MemoryRuntime:
                 with self._job_scope(job):
                     raw = self.embed_fn([text for _, text in items], "document")
                 with self._lock:
+                    if fenced():
+                        return False
                     job.update(embedding_result=raw, state="embedding_received")
                     _write(path, job)
                 state = "embedding_received"
             if state == "embedding_received":
                 vectors = _vectors(job["embedding_result"], len(job["embedding_ids"]))
                 with self._lock:
+                    if fenced():
+                        return False
                     job.update(vectors=dict(zip(job["embedding_ids"], vectors)), state="vectors_ready")
                     _write(path, job)
             with self._lock:
+                if fenced():
+                    return False
                 self.model.ingest([job["event"]], {"facts": job["facts"]},
                                   {"documents": job["vectors"], "queries": {}})
                 # B: settle() marks the job complete after the snapshot write that holds it.
@@ -828,7 +893,7 @@ class MemoryRuntime:
                 self._mark_dirty()
             return True
         except Exception as error:
-            self._block(path, job, error)
+            self._block(path, job, error, epoch)
             return False
 
     # requests' raise_for_status text for a request the provider rejected outright,
@@ -897,14 +962,15 @@ class MemoryRuntime:
                               key=lambda pair: (pair[1]["created_at"], pair[1]["id"]))
                 retried = self._start_due_retries(jobs, limit, retry_allowed)
                 ingested = {waiting.name for waiting, _ in self._ingested}
+                epoch = self._wipes
             for path, job in jobs:
-                if attempted >= limit:
+                if attempted >= limit or epoch != self._wipes:
                     break
                 if path.name in ingested or job["state"] not in {"queued", "extraction_received", "facts_ready",
                                                                  "embedding_received", "vectors_ready"}:
                     continue
                 attempted += 1
-                completed += bool(self._process_job(path))
+                completed += bool(self._process_job(path, epoch))
             settled = self.settle()
             return {"busy": False, "attempted": attempted, "completed": completed, "retried": retried,
                     "settled": settled}
@@ -942,13 +1008,15 @@ class MemoryRuntime:
                 return None
             return min(self._retry_due.values())
 
-    def _query_vector(self, query):
+    def _query_vector(self, query, epoch=None):
         if self.embed_fn is None or not query.strip():
             return None
         key = _digest({"query": query, "model": self.embedding_model, "dimensions": DIMENSIONS})
         path = self.queries_dir / (key + ".json")
         # Serialize cache misses so concurrent identical queries dispatch once.
         with self._query_lock:
+            if epoch is not None and epoch != self._wipes:
+                return None             # a retrieval from before a wipe: nothing of it goes into the new cache
             if path.exists():
                 item = _read(path)
                 if item.get("state") == "complete":
@@ -1000,8 +1068,9 @@ class MemoryRuntime:
             self._require_ready()
             empty = not self.model.safe_events
             self._active_retrievals += 1
+            epoch = self._wipes
         try:
-            vector = None if empty else self._query_vector(query)
+            vector = None if empty else self._query_vector(query, epoch)
             with self._lock:
                 # Query vectors live in their own durable cache. Supply one for
                 # this retrieval only, preventing snapshot growth from searches.

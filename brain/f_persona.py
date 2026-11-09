@@ -442,7 +442,7 @@ def install_persona(g):
     def persona_reset_all():
         """Reset everything: her memory (the confirmed wipe, backup kept), the four persona files back to the
         shipped defaults in brain/defaults/, and the identity fields back to IDENTITY_DEFAULTS — so the
-        first-run wizard plays again. Refuses while she is busy, exactly like the wipe."""
+        first-run wizard plays again. Busy, waiting and forcing exactly like the wipe (f_reset: wait_s, force)."""
         try:
             value = action_request("reset-all")
             if value.get("confirmation") != "RESET":
@@ -450,7 +450,9 @@ def install_persona(g):
             reset_memory = g.get("F_RESET_MEMORY")
             if not callable(reset_memory):
                 raise ValueError("Memory reset is not available in this brain.")
-            result, code = reset_memory()
+            options = g.get("F_RESET_OPTIONS")
+            force, wait_s = options(value) if callable(options) else (False, 0.0)
+            result, code = reset_memory(force=force, wait_s=wait_s)
             if code != 200:
                 return jsonify(result), code
             restored = []

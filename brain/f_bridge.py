@@ -18,7 +18,7 @@ from f_memory import MemoryRuntime
 import methods as memory_methods
 from f_usage import UsageMeter
 from f_settle import Settler
-from f_openrouter import StreamDrainer, drain_scope, write_discarded
+from f_openrouter import StreamDrainer, abort_streams, drain_scope, write_discarded
 from f_extract import SYSTEM, FACT_INSTRUCTION, parse_isolated_facts
 import po_contract
 
@@ -432,10 +432,12 @@ def install(g):
     folder=root/'memory_f';folder.mkdir(exist_ok=True)
     meter=UsageMeter(folder/'usage.sqlite',pricing,budget_usd=cfg.get('test_budget_usd'),budget_scope=cfg.get('budget_scope','live'))
     try:
-        # requests a previous (dead) process began but never finished must not count as "active" forever:
-        # they blocked the memory wipe with "a model update is still active" (2026-11-01)
-        stale=meter.sweep_stale()
-        if stale:print(f"[usage] retired {len(stale)} stale request(s) that never finished")
+        # Requests a previous (dead) process began but never finished must not count as "active": they refused the
+        # memory wipe ("Amika is busy", 2026-11-01) and the model switch ("Model selection is busy", 2026-11-09).
+        # Nothing of this process has begun yet, so every 'started' row is one of them, whatever its age (the old
+        # sweep took only rows older than 15 minutes: a restart right after a crash kept the lock).
+        stale=meter.retire_dead()
+        if stale:print(f"[usage] retired {len(stale)} request(s) an earlier run began and never finished")
     except Exception as error:
         print(f"[usage] stale sweep skipped: {error}")
     # TELEMETRY_SPEC §1.1: call_receipt per metered call (native calls via the meter's
@@ -825,7 +827,18 @@ def install(g):
             with g['_ws_active_lock']:g['_ws_active'].pop(turn_id,None)
     g['_ws_run_generation']=generation
     thinking=g['run_thinking_once']
+    # Unlock and the forced wipe stop her reflections too (stop_work below): each runs with its own cancel flag, so its
+    # model stream stops at once (f_roles reads local.cancel), and a stopped one, or one begun before a wipe
+    # (F_WORK_EPOCH, counted up by f_reset), brings nothing back: no thought for the log, no hint, no opening line.
+    reflections=set();reflections_lock=threading.Lock()
+    g['F_WORK_EPOCH']=[0]
+    class ReflectionStopped(RuntimeError):
+        """A reflection stopped by Unlock or overtaken by a memory wipe: its result is dropped."""
+    def stale_reflection():
+        mine=getattr(local,'reflection',None)
+        return mine is not None and (mine[0].is_set() or mine[1]!=g['F_WORK_EPOCH'][0])
     def reflection(deep_request='',on_guidance=None,target_turn_id=None):
+        epoch=g['F_WORK_EPOCH'][0]
         with g['_hist_lock']:
             if target_turn_id is None:
                 # Idle rhythm: no triggering turn; look back from the latest turn.
@@ -837,14 +850,51 @@ def install(g):
                 if not turn:return {}
                 scope_turn=target_turn_id
             text=(turn or {}).get('f_memory_text','')
+        cancel=threading.Event()
+        with reflections_lock:reflections.add(cancel)
         # The reflection's call_receipt is held until it returns, so a proactive turn it
         # opens can be linked both ways (open_turn_id / begin.origin). Emitted in finally.
         captured=telemetry.begin_capture()
         try:
-            with scope('reflection',scope_turn,text),drain_scope(drainer):return thinking(deep_request,on_guidance,target_turn_id)
+            with scope('reflection',scope_turn,text,cancel),drain_scope(drainer):
+                local.reflection=(cancel,epoch)
+                return thinking(deep_request,on_guidance,target_turn_id)
         finally:
+            with reflections_lock:reflections.discard(cancel)
             telemetry.end_capture(captured)
     g['run_thinking_once']=reflection
+    # webui's run_thinking_once parses its stream, then logs the thought, hangs its hint on the turn and may open a
+    # turn: a stopped (or pre-wipe) reflection ends at the parse instead, and the two writes refuse it as well.
+    for name in ('parse_thinking_response','add_thinking_entry','_maybe_fire_open'):
+        original=g.get(name)
+        if not callable(original):continue
+        def guarded(*args,_original=original,_name=name,**kwargs):
+            if stale_reflection():
+                if _name=='parse_thinking_response':raise ReflectionStopped('reflection stopped (Unlock or a memory wipe)')
+                return False if _name=='_maybe_fire_open' else None
+            return _original(*args,**kwargs)
+        g[name]=guarded
+    def stop_work(reason='interrupt'):
+        """Unlock / the forced wipe: she stops what she is doing. Cancels every turn in flight (reason 'interrupt'
+        keeps what she said so far, 'discard' drops the turn) and every running reflection, and closes the model
+        streams being read, a hung local model's too. Returns what it stopped."""
+        turns=stopped=0
+        with g['_ws_active_lock']:
+            for entry in list(g['_ws_active'].values()):
+                event=entry.get('cancel') if isinstance(entry,dict) else None
+                if event is not None and not event.is_set():
+                    entry['reason']=entry.get('reason') or reason
+                    event.set();turns+=1
+        with reflections_lock:
+            for event in list(reflections):
+                if not event.is_set():event.set();stopped+=1
+        streams=abort_streams()
+        # the page stops her audio too (speech: stop_her): her voice has stopped, the silence clock starts over
+        voice_stopped=g.get('_voice_stopped')
+        if callable(voice_stopped):
+            with contextlib.suppress(Exception):voice_stopped(None)
+        return {'turns':turns,'reflections':stopped,'streams':streams}
+    g['F_STOP_WORK']=stop_work
     # B12: the reflection's 开口 (a proactive spoken turn) and the idle rhythm are
     # restored as in MekaHime's earlier companion builds when build_f.json enables them. Open turns
     # are metered as deep calls and archived as evidence. Self-continuation,
@@ -882,10 +932,23 @@ def install(g):
         work_requested.set()
         if not worker_lock.acquire(blocking=False):return
         try:
+            last_pending=None
             while True:
                 work_requested.clear()
-                memory.flush_pending()
-                if memory.status()['pending']:continue
+                result=memory.flush_pending() or {}
+                pending=memory.status()['pending']
+                if pending:
+                    if result.get('busy'):
+                        work_requested.wait(0.2)          # a wipe or a model switch holds the memory locks for a moment
+                        continue
+                    if last_pending is None or pending<last_pending or result.get('completed'):
+                        last_pending=pending
+                        continue
+                    # Pending jobs no flush can advance: a dispatch state whose worker ended without recording an
+                    # outcome (an error the job file could not even take). This loop used to spin on them, holding
+                    # the worker lock, so the wipe answered "busy" until a restart (2026-11-09). Recover them like
+                    # a restart does; whatever still cannot move waits for the next archive (settled below).
+                    if memory.recover_orphans():continue
                 # B (f_memory.settle): the batch's one snapshot write waits for the turn in flight to end
                 # (f_memory forces it after memory_persist_delay_s); new archives are picked up meanwhile.
                 if not memory.settle():
@@ -912,10 +975,12 @@ def install(g):
             speech='\n'.join(x for x in [surface,deep] if x)
             if not speech.strip():return
             event={'id':'live-'+tid,'time':t['ts'],'user':'' if open_cue else t['f_user_text'],'assistant':speech,'source_kind':'conversation','cue':open_cue}
+            # The wipe holds the history lock while it runs: a wipe after this point drops the event (memory.archive).
+            epoch=getattr(memory,'_wipes',None)
         # R21: the evidence snapshot is persisted outside the history lock, so a
         # multi-megabyte write never stalls the conversation. archive() is
         # idempotent for an identical event id.
-        memory.archive(event)
+        memory.archive(event,epoch=epoch)
         with g['_hist_lock']:
             t=g['_find_turn'](tid)
             if t is not None:t['f_archived']=True

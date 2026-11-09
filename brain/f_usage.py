@@ -32,12 +32,23 @@ import math
 import re
 import sqlite3
 import threading
+import time
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
 from f_settle import backfill, ensure_schema, key_usage_view, refresh_row, row_settlement
+
+
+# Requests this process has begun and not finished yet: request id -> (ledger path, the thread that began it, monotonic
+# start). A 'started' row that is not in here was begun by a process that is gone (a crash, a kill, a restart within
+# a few minutes) and can never finish; one whose thread is gone was dropped between begin() and finish(). Both used to
+# count as "active" until STALE_AFTER_S had passed, and only the wipe and the display reset ever swept them: the memory
+# wipe answered "Amika is busy" and the model switch "Model selection is busy" across restarts (2026-11-09, items 49
+# and 32). retire_dead() retires them; the boot sweep in f_bridge.install retires every row an earlier process left.
+_OPEN: dict = {}
+_OPEN_LOCK = threading.Lock()
 
 
 TOKEN_KEYS = (
@@ -394,16 +405,24 @@ class UsageMeter:
             raise BudgetExceeded("Budgeted calls need a positive conservative reservation and a priced model")
         snapshot = {"rates": rates, "metadata": self.pricing["metadata"]}
         request_id = uuid.uuid4().hex
-        with self._lock, self._connect() as conn:
-            conn.execute("BEGIN IMMEDIATE")
-            if self.budget_scope:
-                budget = self._budget(conn, self.budget_scope, self.budget_usd)
-                if reserve > budget["remaining_usd"] + 1e-12:
-                    raise BudgetExceeded("Request reservation exceeds remaining test budget")
-            conn.execute("""INSERT INTO requests
-                (id,provider,model,phase,turn_id,started_at,status,pricing_status,pricing_json,issues_json,budget_scope,reservation_usd)
-                VALUES (?,?,?,?,?,?,'started','missing_usage',?,'[]',?,?)""",
-                         (request_id, provider, model, phase, turn_id, _now(), json.dumps(snapshot), self.budget_scope, reserve))
+        # Registered before the row exists, so retire_dead() never mistakes it for an earlier process's row.
+        with _OPEN_LOCK:
+            _OPEN[request_id] = (str(self.path), threading.current_thread(), time.monotonic())
+        try:
+            with self._lock, self._connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                if self.budget_scope:
+                    budget = self._budget(conn, self.budget_scope, self.budget_usd)
+                    if reserve > budget["remaining_usd"] + 1e-12:
+                        raise BudgetExceeded("Request reservation exceeds remaining test budget")
+                conn.execute("""INSERT INTO requests
+                    (id,provider,model,phase,turn_id,started_at,status,pricing_status,pricing_json,issues_json,budget_scope,reservation_usd)
+                    VALUES (?,?,?,?,?,?,'started','missing_usage',?,'[]',?,?)""",
+                             (request_id, provider, model, phase, turn_id, _now(), json.dumps(snapshot), self.budget_scope, reserve))
+        except BaseException:
+            with _OPEN_LOCK:
+                _OPEN.pop(request_id, None)
+            raise
         return request_id
 
     def finish(self, request_id: str, usage: dict | None = None, status: str = "complete", error: Any = None,
@@ -422,6 +441,10 @@ class UsageMeter:
 
     def _finish(self, request_id, usage, status, error, reported_cost_usd, actual_model,
                 actual_provider, provider_request_id) -> dict:
+        # Whoever finishes a request gives up its claim on it, even if the write below fails: a row a finish could
+        # not record must not count as active forever (retire_dead takes it).
+        with _OPEN_LOCK:
+            _OPEN.pop(request_id, None)
         if status not in STATUS_VALUES:
             raise ValueError("Unknown request status")
         with self._lock, self._connect() as conn:
@@ -546,14 +569,59 @@ class UsageMeter:
         with self._lock, self._connect() as conn:
             rows = conn.execute("SELECT id FROM requests WHERE status='started' AND started_at < ?",
                                 (cutoff,)).fetchall()
+        return self._retire([row["id"] for row in rows])
+
+    # A request handed to the drainer (f_openrouter.StreamDrainer) outlives the thread that began it for at most its drain
+    # deadline (build_f.json drain_deadlines_s, 120 s for a reflection), so a row of this process whose thread is gone is
+    # taken for dropped only after this long.
+    LEAK_GRACE_S = 180
+
+    def _retire(self, ids, error="stale: no completion was recorded") -> list:
+        """Record these requests with the 'unknown' outcome so they stop counting as active. A finish that still arrives
+        later records its usage as usual (_finish never lets a cleanup erase a receipt, nor a later one be lost)."""
         retired = []
-        for row in rows:
+        for ident in ids:
             try:
-                self._finish(row["id"], None, "unknown", "stale: no completion was recorded", None, None, None, None)
-                retired.append(row["id"])
+                self._finish(ident, None, "unknown", error, None, None, None, None)
+                retired.append(ident)
             except Exception:
                 pass
         return retired
+
+    def active_requests(self) -> list:
+        """The 'started' rows with what a busy message needs: {id, provider, model, phase, turn_id, started_at, live}.
+        live: begun by a thread of this process that is still running (the others are what retire_dead takes)."""
+        with self._lock, self._connect() as conn:
+            rows = conn.execute("SELECT id,provider,model,phase,turn_id,started_at FROM requests WHERE status='started' "
+                                "ORDER BY started_at").fetchall()
+        with _OPEN_LOCK:
+            claimed = dict(_OPEN)
+        return [dict(row, live=bool(row["id"] in claimed and claimed[row["id"]][1].is_alive())) for row in rows]
+
+    def retire_dead(self, leak_grace_s: float | None = None) -> list:
+        """Retire the 'started' rows that can never finish: every one this process did not begin (an earlier process
+        left it: at boot that is all of them, whatever their age) and the ones whose beginning thread has ended
+        without finishing them, after leak_grace_s (default LEAK_GRACE_S). Requests still running are left alone.
+        Returns the retired ids."""
+        leak_grace_s = self.LEAK_GRACE_S if leak_grace_s is None else leak_grace_s
+        with self._lock, self._connect() as conn:
+            rows = conn.execute("SELECT id FROM requests WHERE status='started'").fetchall()
+        now = time.monotonic()
+        with _OPEN_LOCK:
+            claimed = dict(_OPEN)
+        dead = []
+        for row in rows:
+            entry = claimed.get(row["id"])
+            if entry is None or (not entry[1].is_alive() and now - entry[2] >= max(0.0, float(leak_grace_s))):
+                dead.append(row["id"])
+        return self._retire(dead)
+
+    def retire_all(self) -> list:
+        """Force (a forced wipe, Unlock): retire every 'started' row, running or not; the ones still running finish
+        later with their real usage. Returns the retired ids."""
+        with self._lock, self._connect() as conn:
+            rows = conn.execute("SELECT id FROM requests WHERE status='started'").fetchall()
+        return self._retire([row["id"] for row in rows], "cancelled")
 
     def reset_display(self) -> dict:
         """Start a new display window without deleting receipts or changing any budget.

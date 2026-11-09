@@ -384,6 +384,10 @@ def install_ollama(g):
             value = action_request("ollama-use")
             model = value.get("model")
             roles = value.get("roles") if isinstance(value.get("roles"), dict) else {}
+            # force: after Unlock (f_controls) — work still in flight keeps its model, new calls take this one
+            force = value.get("force", False)
+            if not isinstance(force, bool):
+                raise ValueError("force must be true or false.")
             selections = {}
             for role in ROLES:
                 name = roles.get(role, model)
@@ -393,14 +397,17 @@ def install_ollama(g):
                 if key not in manager.options[role]:
                     raise ValueError(f"{name} is not a detected Ollama model for the {role} role — detect models first.")
                 selections[role] = key
-            result = manager.set(selections)
+            result = manager.set(selections, force=True) if force else manager.set(selections)
             return jsonify({"ok": True, "selections": result["selections"], "transport": result["transport"],
                             "in_use": in_use(manager)})
         except PermissionError as error:
             return jsonify({"ok": False, "error": str(error)}), 403
         except ValueError as error:
             return jsonify({"ok": False, "error": str(error)}), 400
-        except RuntimeError:
-            return jsonify({"ok": False, "error": "Model selection is busy. Wait for all speech and memory work to finish."}), 409
+        except RuntimeError as error:
+            reasons = list(getattr(error, "reasons", None) or [])
+            message = ("Model selection is busy: " + "; ".join(reasons) + ". Wait a moment, or press Unlock (she stops "
+                       "what she is doing).") if reasons else "Model selection is busy. Wait for all speech and memory work to finish."
+            return jsonify({"ok": False, "error": message, "code": "model_busy", "busy": reasons}), 409
 
     print("[ollama] local model endpoints installed")

@@ -637,6 +637,12 @@ registerProcessor('pcm-pusher', PCMPusher);`;
         resetEmote();
         toast(msg.message || "She hit an error.", true);
         break;
+      case "stop_audio":
+        // Unlock on the Setup page stopped what she was doing: her voice stops here too
+        avatar.flush();
+        resetEmote();
+        $("hudSay").textContent = "";
+        break;
       case "tts_error":
         if (msg.surface_last) surfaceClosed();         // the surface's final sentence failed: nothing left to wait for
         toast("TTS: " + (msg.error || "error"), true);
@@ -1392,7 +1398,8 @@ registerProcessor('pcm-pusher', PCMPusher);`;
         const rows = el("div", { class: "check" });
         const verdict = el("p", { class: "verdict" });
         const next = button("Start talking", finish, "primary");
-        body.append(rows, verdict);
+        body.append(rows, verdict, el("p", { class: "hint", text: "To start over one day: Setup → Danger zone → Wipe memory. "
+          + "She forgets every conversation; a backup is kept." }));
         actions.append(button("← Back", () => go(3), "small"), button("Re-check", () => runCheck(rows, verdict, next), "small skip"),
           el("a", { class: "btn small", href: "/setup", text: "Open Setup" }), next);
         runCheck(rows, verdict, next);

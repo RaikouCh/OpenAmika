@@ -113,10 +113,11 @@
     return response.json();
   }
 
-  async function postAction(url, action, body) {
+  // headers: extra request headers (the model switch after Unlock sends X-Build-F-Force: 1)
+  async function postAction(url, action, body, headers) {
     const response = await fetch(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json", "X-Build-F-Action": action },
+      headers: { ...(headers || {}), "Content-Type": "application/json", "X-Build-F-Action": action },
       body: JSON.stringify(body || {}),
     });
     let payload = null;
