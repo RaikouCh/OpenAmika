@@ -50,6 +50,51 @@ class AddressTests(unittest.TestCase):
         self.assertFalse(pet.same_origin("not a url", base))
 
 
+class ServerCheckTests(unittest.TestCase):
+    """Is her page up? "localhost" costs a Python client two seconds per request on Windows when she listens on IPv4
+    only (it tries ::1 first), so the window asks the number first."""
+
+    def ask(self, base, up):
+        asked = []
+
+        class Answer:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+        def urlopen(url, timeout=None):
+            asked.append(url)
+            if url not in up:
+                raise OSError("refused")
+            return Answer()
+
+        with mock.patch.object(pet, "urlopen", urlopen):
+            return pet.reachable(base), asked
+
+    def test_localhost_is_asked_by_number_first(self):
+        self.assertEqual(self.ask("http://localhost:53000", {"http://127.0.0.1:53000/health"}),
+                         (True, ["http://127.0.0.1:53000/health"]))
+        self.assertEqual(self.ask("http://localhost/", {"http://127.0.0.1/health"}), (True, ["http://127.0.0.1/health"]))
+
+    def test_the_name_is_still_asked_when_the_number_does_not_answer(self):
+        self.assertEqual(self.ask("http://localhost:53000", {"http://localhost:53000/health"}),
+                         (True, ["http://127.0.0.1:53000/health", "http://localhost:53000/health"]))
+
+    def test_another_address_is_asked_as_given(self):
+        self.assertEqual(self.ask("http://127.0.0.1:53010/", {"http://127.0.0.1:53010/health"}),
+                         (True, ["http://127.0.0.1:53010/health"]))
+        self.assertEqual(self.ask("http://my-pc.tail1234.ts.net", set()), (False, ["http://my-pc.tail1234.ts.net/health"]))
+
+    def test_nobody_answers(self):
+        self.assertEqual(self.ask("http://localhost:53000", set()),
+                         (False, ["http://127.0.0.1:53000/health", "http://localhost:53000/health"]))
+        self.assertFalse(pet.reachable("http://[half"))
+
+
 class GeometryTests(unittest.TestCase):
     def test_round_trip_and_rejects(self):
         with tempfile.TemporaryDirectory() as tmp:

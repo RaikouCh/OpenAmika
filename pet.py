@@ -91,12 +91,25 @@ def same_origin(url: str, base: str) -> bool:
 
 
 def reachable(base: str, timeout: float = 3.0) -> bool:
-    """True when the speech gateway (the web UI) answers its /health at base."""
+    """True when the speech gateway (the web UI) answers its /health at base.
+
+    "localhost" is asked as 127.0.0.1 first: Windows tries ::1 before it, and she listens on IPv4 only, so the name
+    costs two seconds of every start. The name itself is still asked when the number does not answer."""
+    urls = [base]
     try:
-        with urlopen(base.rstrip('/') + '/health', timeout=timeout) as response:
-            return response.status == 200
-    except (OSError, ValueError):
-        return False
+        parts = urlsplit(base)
+        if parts.hostname == 'localhost':
+            urls.insert(0, parts._replace(netloc='127.0.0.1' + (f':{parts.port}' if parts.port else '')).geturl())
+    except ValueError:
+        pass
+    for url in urls:
+        try:
+            with urlopen(url.rstrip('/') + '/health', timeout=timeout) as response:
+                if response.status == 200:
+                    return True
+        except (OSError, ValueError):
+            continue
+    return False
 
 
 def load_geometry(path: Path) -> dict | None:
