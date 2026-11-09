@@ -316,6 +316,21 @@ class Verified:
 RETRY_HTTP = (408, 425, 429, 500, 502, 503, 504)   # worth asking again; any other HTTP error fails at once
 
 
+def progress_line(name: str, done: int, total: int, rate: float) -> str:
+    """One progress line of a download: 'model.pt: 412 / 937 MB (43%), 8.1 MB/s, 525 MB left, about 1 min' (without a
+    known total: what arrived so far and the speed)."""
+    speed = f"{rate / 1e6:.1f} MB/s" if rate >= 1e5 else f"{rate / 1e3:.0f} KB/s"
+    if not total:
+        return f"{name}: {done / 1e6:,.0f} MB so far, {speed}"
+    left = max(0, total - done)
+    left_text = f"{left / 1e9:.1f} GB" if left >= 1e9 else f"{left / 1e6:,.0f} MB"
+    when = ""
+    if rate > 0 and left:
+        eta = left / rate
+        when = f", about {eta / 3600:.1f} h" if eta >= 5400 else f", about {max(1, round(eta / 60))} min"
+    return f"{name}: {done / 1e6:,.0f} / {total / 1e6:,.0f} MB ({done * 100 // total}%), {speed}, {left_text} left{when}"
+
+
 def remote_size(r: Any, have: int) -> Optional[int]:
     """Full size of the file behind a response: the total of a 206's Content-Range, else Content-Length."""
     total = (r.headers.get("Content-Range") or "").rpartition("/")[2].strip()
@@ -374,7 +389,10 @@ def fetch(url: str, dest: Path, size: Optional[int], sha: Optional[str], ver: Op
                                              f"{size:,}. The file at that address is not the pinned one.")
                     total = size or announced or 0
                     t_last = time.time()
-                    done = have
+                    done = done_last = have
+                    if have:
+                        log(f"  {dest.name}: continuing at {have / 1e6:,.0f} MB (an earlier run stopped there)")
+                    hinted = False
                     with open(part, "ab" if have else "wb") as f:
                         while True:
                             block = r.read(1 << 20)
@@ -383,9 +401,15 @@ def fetch(url: str, dest: Path, size: Optional[int], sha: Optional[str], ver: Op
                             f.write(block)
                             done += len(block)
                             if time.time() - t_last > 10:
-                                pct = f" {done * 100 // total}%" if total else ""
-                                log(f"  {dest.name}: {done / 1e6:,.0f} / {total / 1e6:,.0f} MB{pct}")
-                                t_last = time.time()
+                                rate = (done - done_last) / max(1e-6, time.time() - t_last)
+                                line = progress_line(dest.name, done, total, rate)
+                                if not hinted and not auth and rate < 300e3 and token_goes_to(url):
+                                    hinted = True     # Hugging Face throttles anonymous downloads
+                                    line += ("; slow: Hugging Face throttles downloads without a token (free at "
+                                             "https://huggingface.co/settings/tokens; set HF_TOKEN and run this again, "
+                                             "it continues here)")
+                                log("  " + line)
+                                t_last, done_last = time.time(), done
             got_size = part.stat().st_size
             if size and got_size < size:         # the connection ended early: retried, resuming
                 raise SetupError(f"{dest.name}: got {got_size:,} of {size:,} bytes")

@@ -211,3 +211,244 @@ def test_the_windows_entry_point_parses_and_needs_no_bom():
     p = subprocess.run([exe, "-NoProfile", "-NonInteractive", "-Command", script], capture_output=True, text=True,
                        env={**os.environ, "OA_PS1": str(ps1)}, timeout=120)
     assert p.returncode == 0, p.stdout + p.stderr
+
+
+def test_the_windows_entry_point_takes_3_11_then_3_12_and_passes_the_callers_folder_on():
+    text = (ROOT / "scripts" / "setup_windows.ps1").read_text("ascii")
+    assert "foreach ($want in @('3.11', '3.12'))" in text
+    assert "$env:OPENAMIKA_CALLER_DIR = $callerDir" in text and "$env:OPENAMIKA_CALLER_SHELL" in text
+    assert text.index("$callerDir = (Get-Location)") < text.index("Set-Location -LiteralPath $root")
+    assert "numpy 1.26.4" in text
+
+
+# ---- the window it runs in: the ZIP's nested folder, another folder, another shell ---------------------------------
+def test_the_inner_folder_of_a_github_zip_is_recognised():
+    for name in ("OpenAmika-main", "OpenAmika-1.0.0", "openamika-MAIN", "OpenAmika-v1.2"):
+        inner = Path("C:/Users/me/Downloads") / name / name
+        assert core.zip_outer(inner) == inner.parent, name
+    assert core.zip_outer(Path("C:/OpenAmika")) is None
+    assert core.zip_outer(Path("C:/Users/me/Downloads/OpenAmika-main")) is None          # unpacked "here": one level
+    assert core.zip_outer(Path("D:/OpenAmika/OpenAmika")) is None                        # a clone inside a clone's name
+
+
+def test_the_cd_line_suits_the_shell():
+    root = Path("D:/Tools/OpenAmika")
+    assert core.cd_command(root, "powershell") == f'cd "{root}"'
+    assert core.cd_command(root, "cmd") == f'cd /d "{root}"'                             # cmd changes the drive with /d
+    assert core.cd_command(root, "bash") == 'cd "/d/Tools/OpenAmika"'
+
+
+def test_caller_shell_comes_from_the_windows_entry_point_or_git_bash(monkeypatch):
+    for var in ("OPENAMIKA_CALLER_SHELL", "MSYSTEM"):
+        monkeypatch.delenv(var, raising=False)
+    assert core.caller_shell() == "powershell"
+    monkeypatch.setenv("OPENAMIKA_CALLER_SHELL", "cmd.exe")
+    assert core.caller_shell() == "cmd"
+    monkeypatch.setenv("OPENAMIKA_CALLER_SHELL", "powershell.exe")
+    monkeypatch.setenv("MSYSTEM", "MINGW64")
+    assert core.caller_shell() == "bash"
+
+
+def test_a_window_outside_her_folder_gets_the_exact_cd_line(tmp_path):
+    outer = tmp_path / "OpenAmika-main"
+    inner = outer / "OpenAmika-main"
+    inner.mkdir(parents=True)
+    notes, cd = core.folder_notes(inner, inner, "powershell")
+    assert cd == f'cd "{inner}"' and notes == []                  # in the inner folder: fine, cd shown as a reminder
+    notes, cd = core.folder_notes(inner, outer, "powershell")
+    assert cd == f'cd "{inner}"' and "outer folder of the ZIP" in notes[0] and cd in notes[0]
+    system32 = tmp_path / "Windows" / "System32"
+    system32.mkdir(parents=True)
+    notes, cd = core.folder_notes(inner, system32, "cmd")
+    assert cd == f'cd /d "{inner}"' and str(system32) in notes[0]
+    clone = tmp_path / "OpenAmika"
+    clone.mkdir()
+    assert core.folder_notes(clone, clone, "powershell") == ([], "")
+    notes, _ = core.folder_notes(clone, clone, "bash")
+    assert any("Git Bash" in n for n in notes)
+
+
+def test_the_summary_ends_with_the_cd_line_when_the_window_is_elsewhere(checkout, monkeypatch, tmp_path):
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.setenv("OPENAMIKA_CALLER_DIR", str(elsewhere))
+    monkeypatch.delenv("MSYSTEM", raising=False)
+    monkeypatch.setenv("OPENAMIKA_CALLER_SHELL", "powershell.exe")
+    monkeypatch.setattr(core, "gpu_info", lambda: None)
+    monkeypatch.setattr(core, "hf_cached", lambda repo: None)
+    monkeypatch.setattr(core, "ensure_speech_model", lambda args: None)
+    with contextlib.redirect_stdout(io.StringIO()) as out:
+        core.main(["--check"])
+    text = out.getvalue()
+    assert f'cd "{checkout}"' in text and str(elsewhere) in text
+
+
+# ---- the Hugging Face token ---------------------------------------------------------------------------------------
+@pytest.fixture()
+def no_token(tmp_path, monkeypatch):
+    for var in ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", "HF_HUB_DISABLE_IMPLICIT_TOKEN"):
+        monkeypatch.setenv(var, "-")        # recorded first, so the HF_TOKEN the code sets is removed afterwards
+        monkeypatch.delenv(var)
+    saved = tmp_path / "hf" / "token"
+    monkeypatch.setenv("HF_TOKEN_PATH", str(saved))
+    return saved
+
+
+def ns(**kw):
+    import argparse
+    return argparse.Namespace(**{"check": False, "no_token_prompt": False, **kw})
+
+
+def test_a_token_already_set_is_used_without_asking(no_token, monkeypatch):
+    monkeypatch.setenv("HF_TOKEN", "hf_" + "x" * 30)
+    mark, note = core.ask_hf_token(ns(), ask=lambda prompt: pytest.fail("asked"))
+    assert mark.strip() == "OK" and "HF_TOKEN" in note and "x" * 30 not in note
+
+
+def test_no_console_or_check_never_asks(no_token, monkeypatch):
+    monkeypatch.setattr(core, "console_input", lambda: False)
+    mark, note = core.ask_hf_token(ns(), ask=lambda prompt: pytest.fail("asked"))
+    assert mark.strip() == "--" and "huggingface.co/settings/tokens" in note
+    monkeypatch.setattr(core, "console_input", lambda: True)
+    assert core.ask_hf_token(ns(check=True), ask=lambda prompt: pytest.fail("asked"))[0].strip() == "--"
+    assert core.ask_hf_token(ns(no_token_prompt=True), ask=lambda prompt: pytest.fail("asked"))[0].strip() == "--"
+
+
+def test_a_pasted_token_is_checked_set_and_saved_like_hf_auth_login(no_token, monkeypatch):
+    monkeypatch.setattr(core, "console_input", lambda: True)
+    token = "hf_" + "AbCd" * 8 + "wxyz"
+    with contextlib.redirect_stdout(io.StringIO()) as out:
+        mark, note = core.ask_hf_token(ns(), ask=lambda prompt: f"  {token} \n", check=lambda t: t == token)
+    assert mark.strip() == "OK" and "...wxyz" in note and token not in note and token not in out.getvalue()
+    assert "huggingface.co/settings/tokens" in out.getvalue()
+    assert core.os.environ["HF_TOKEN"] == token
+    assert no_token.read_text("utf-8") == token
+    assert core.base.hf_token(None)[0] == token                      # setup_tts.py finds it from now on
+    del core.os.environ["HF_TOKEN"]
+    assert core.base.hf_token(None) == (token, "`hf auth login`")    # also in a new window (the saved file)
+
+
+def test_enter_skips_and_a_wrong_token_is_not_kept(no_token, monkeypatch):
+    monkeypatch.setattr(core, "console_input", lambda: True)
+    with contextlib.redirect_stdout(io.StringIO()):
+        assert core.ask_hf_token(ns(), ask=lambda prompt: "")[0].strip() == "--"
+        mark, note = core.ask_hf_token(ns(), ask=lambda prompt: "hf_" + "z" * 30, check=lambda t: False)
+        assert mark.strip() == "--" and "did not accept" in note
+        mark, note = core.ask_hf_token(ns(), ask=lambda prompt: "my password", check=lambda t: True)
+        assert mark.strip() == "--" and "start with hf_" in note
+    assert not no_token.exists() and "HF_TOKEN" not in core.os.environ
+
+
+# ---- Python 3.11 / 3.12 / 3.13 ------------------------------------------------------------------------------------
+def test_python_3_11_and_3_12_are_allowed_3_13_is_not():
+    ok = core.base.ok_version
+    assert ok((3, 11, 9)) and ok((3, 12, 7))
+    assert not ok((3, 10, 14)) and not ok((3, 13, 1)) and not ok((3, 14, 0)) and not ok(None)
+    assert "numpy 1.26.4" in core.PYTHON_NEEDED and "3.13" in core.PYTHON_NEEDED
+
+
+def test_the_base_python_prefers_3_11_then_takes_3_12_and_refuses_3_13(monkeypatch):
+    base = core.base
+    monkeypatch.setattr(base.shutil, "which", lambda name: None)
+    def versions(table):
+        monkeypatch.setattr(base, "py_version", lambda cmd: table.get(" ".join(cmd[1:]) if cmd[0] == "py" else "self"))
+    versions({"self": (3, 12, 7), "-3.11": (3, 11, 9), "-3.12": (3, 12, 7)})
+    assert base.find_base_python(None) == (["py", "-3.11"], (3, 11, 9)) if base.IS_WIN else True
+    versions({"self": (3, 12, 7)})
+    with contextlib.redirect_stdout(io.StringIO()) as out:
+        cmd, v = base.find_base_python(None)
+    assert v == (3, 12, 7) and "only 3.11 is tested" in out.getvalue()
+    versions({"self": (3, 13, 1)})
+    with pytest.raises(core.SetupError, match="numpy"):
+        base.find_base_python(None)
+
+
+def test_check_says_when_an_update_changed_a_requirements_file(checkout):
+    import argparse
+    py = core.env_python(core.ENVS / "brain")
+    py.parent.mkdir(parents=True)
+    py.write_bytes(b"")
+    (core.ENVS / "brain" / "openamika-requirements.sha256").write_text("an older requirements file", "utf-8")
+    (checkout / "brain" / "requirements.txt").write_text("flask==3.0.0\n", "utf-8")
+    with pytest.raises(core.SetupError, match="changed since it was installed"):
+        core.ensure_env("brain", [], "cpu", argparse.Namespace(check=True, reinstall=False))
+
+
+# ---- the Hugging Face models: their weights fetched here, resumable ----------------------------------------------
+def test_the_weight_files_are_the_ones_a_loader_reads():
+    def f(name, size=10):
+        return {"rfilename": name, "size": size, "lfs": {"sha256": "ab" * 32, "size": size}}
+    bin_only = [f("pytorch_model.bin"), f("onnx/model.onnx_data"), {"rfilename": "config.json", "size": 5}]
+    assert [w[0] for w in core.weight_files(bin_only)] == ["pytorch_model.bin"]
+    both = [f("model.safetensors"), f("pytorch_model.bin"), f("tokenizer.json")]
+    assert [w[0] for w in core.weight_files(both)] == ["model.safetensors"]
+    sharded = [f("model-00001-of-00002.safetensors"), f("model-00002-of-00002.safetensors")]
+    assert len(core.weight_files(sharded)) == 2
+    assert core.weight_files([f("onnx/model.onnx")]) == []
+
+
+def test_an_interrupted_weight_download_continues_where_it_stopped(tmp_path, monkeypatch):
+    import hashlib
+    import http.server
+    import threading
+    import urllib.parse
+    data = bytes(range(256)) * 4096                      # 1 MB of weights
+    sha = hashlib.sha256(data).hexdigest()
+    commit = "c0ffee" * 6 + "abcd"
+    ranges = []
+
+    class Hub(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            path = urllib.parse.urlsplit(self.path).path
+            if path == "/api/models/org/model/revision/main":
+                body = json.dumps({"sha": commit, "siblings": [
+                    {"rfilename": "config.json", "size": 2},
+                    {"rfilename": "model.safetensors", "size": len(data), "lfs": {"sha256": sha, "size": len(data)}}]}).encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                return self.wfile.write(body)
+            assert path == f"/org/model/resolve/{commit}/model.safetensors", path
+            start = 0
+            if self.headers.get("Range"):
+                start = int(self.headers["Range"].split("=")[1].split("-")[0])
+                ranges.append(start)
+                self.send_response(206)
+                self.send_header("Content-Range", f"bytes {start}-{len(data) - 1}/{len(data)}")
+            else:
+                self.send_response(200)
+            self.send_header("Content-Length", str(len(data) - start))
+            self.end_headers()
+            self.wfile.write(data[start:])
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Hub)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    monkeypatch.setattr(core.base, "HF", f"http://127.0.0.1:{server.server_address[1]}")
+    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "hub"))
+    monkeypatch.setenv("HF_HUB_DISABLE_IMPLICIT_TOKEN", "1")
+    for var in ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN"):
+        monkeypatch.delenv(var, raising=False)
+    target = tmp_path / "hub" / "models--org--model" / "snapshots" / commit / "model.safetensors"
+    target.parent.mkdir(parents=True)
+    (target.parent / "model.safetensors.part").write_bytes(data[:300_000])      # an earlier run stopped here
+    env = tmp_path / "envs" / "vision"
+    env.mkdir(parents=True)
+    try:
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            note = core.prefetch_weights("org/model", env)
+            again = core.prefetch_weights("org/model", env)
+    finally:
+        server.shutdown()
+    assert target.read_bytes() == data and ranges == [300_000]
+    assert "continuing at" in out.getvalue()
+    assert "downloaded and checked" in note and "in place and checked" in again and ranges == [300_000]
+
+
+def test_progress_lines_show_speed_and_what_is_left():
+    line = core.base.progress_line("model.safetensors", 1_000_000_000, 4_000_000_000, 10e6)
+    assert "1,000 / 4,000 MB (25%)" in line and "10.0 MB/s" in line and "3.0 GB left" in line and "about 5 min" in line
+    assert "50 KB/s" in core.base.progress_line("x", 1, 10_000_000, 50e3)
+    assert core.base.progress_line("x", 5_000_000, 0, 2e6) == "x: 5 MB so far, 2.0 MB/s"
