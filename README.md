@@ -86,13 +86,19 @@ again resumes and skips everything that is finished. When the `setup_tts.py` sum
 and `OK Live2D model Amika`, she has her voice and her body; `OK paper doll Host` is the stand-in for her helpers
 ([Her helpers](#her-helpers-hermes-and-nanomuse)).
 
+To start her memory over later: Setup page → Danger zone → **Wipe memory**. She forgets every conversation and fact,
+and a backup stays in `memory_f\backups\`. If she is still talking, it waits a few seconds, then offers **Force
+wipe** (she stops what she is doing). From a script: `envs\brain\Scripts\python.exe launch.py --wipe-memory`
+(`--force` to stop her first; it also works while she is not running).
+
 ## Talk to her
 
 Double-click `Start_OpenAmika.bat` in the OpenAmika folder (in PowerShell: `.\Start_OpenAmika.bat`). One console
 starts all of her, and your browser opens **http://localhost:53000** when she is ready: about a minute, a few more
 the very first time. On your first visit she introduces herself and asks your name, your city and, if `brain\.env`
 has none yet, your OpenRouter key. Then press the power button and talk, or type. Click the page once so the browser
-lets her speak.
+lets her speak. When you go quiet she may say something, counted from the moment her voice stops; Setup → You &
+Amika → "When you go quiet" sets it to Normal, Rare or Off.
 
 The light at the top right of every page is her health: green means everything works; click it to see what is not.
 Double-click `Stop_OpenAmika.bat` (or press Ctrl+C in her console) to stop her. To check everything without starting
@@ -119,9 +125,14 @@ name, your city and your edits), then run the two setup commands again (they fet
 | Her voice stutters or is very slow | Close other programs that use the graphics card, or turn her eyes off: `"vision": {"enabled": false}` in `settings.json`. |
 | On Ollama she is out of character, forgets things, or her replies come out broken | The model is too small. Use one of 27B or more (70B or more for the full experience), or go back to OpenRouter: Setup → Brain → OpenRouter → "Switch back to the OpenRouter preset". |
 | On Ollama she answers very slowly | If `ollama ps` shows a CPU/GPU split instead of `100% GPU`, the model does not fit in your video memory next to her. With `100% GPU`, slow replies after you interrupt her, or while she saves a memory or reflects, are normal for a local model. See [Which language model?](#which-language-model). |
+| `Amika is busy` when you wipe her memory or reset everything | It waits a few seconds for her to finish; if she is still busy, press **Force wipe (she stops what she is doing)**. The backup is kept either way. |
+| `Model selection is busy` on the Setup page | Press **Unlock** next to the message: she stops what she is doing, and the switch goes through. |
+| The console's brain row (or the Setup page's `brain start`) is red | The row says why: the port is taken, the environment is broken, the model does not fit, or the key is missing. |
 | A helper's card on the Tools page is red, or she says she cannot reach Hermes or nanoMuse | Run `envs\brain\Scripts\python.exe launch.py --check` and look at its `agent` and `hermes key` lines; every message and its fix is in [docs/TOOLS.md](docs/TOOLS.md#when-it-does-not-work). |
 
-Every part writes a log in `logs\`. For anything else, ask on [Discord](https://discord.gg/mekahime) or open an
+Every part writes a log in `logs\`. For anything else, run `envs\brain\Scripts\python.exe launch.py --diagnose`: it
+writes one zip in `logs\` (the startup checks, the end of each log, your settings without keys, versions, free disk and
+GPU memory). Attach it when you ask on [Discord](https://discord.gg/mekahime) or open an
 [issue](https://github.com/zeekk0/OpenAmika/issues). Using an AI coding agent? Point it at
 [README_IF_YOU_ARE_AI_AGENT.md](README_IF_YOU_ARE_AI_AGENT.md).
 

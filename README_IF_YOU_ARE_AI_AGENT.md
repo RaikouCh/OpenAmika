@@ -68,6 +68,13 @@ ever disagree, the code wins, and you should fix this file in the same change.
   | `reflection` | `brain/思考.txt` | a background coach between turns: `<提示>` hint, `<计划>` plan, `<开口>` makes her speak first |
   | `memory_write` | (in code) | extracts quoted facts from each protected turn into her evidence memory |
 
+  A reply she speaks (the stage with her voice on) is asked for about four sentences unless the person asks for a
+  story or for more: `webui.VOICE_REPLY_NOTE` opens the deep's per-turn instruction (`{deep_instruction}`, after the
+  cached prefix; prompt only, nothing cuts her reply). Text (Discord / Telegram, or the page with her voice off: the
+  gateway sends `"voice": false`) keeps the long form. Her remark on a silence (the idle reflection, `<开口>`) waits
+  until her voice has stopped: the stage's `speech_done` starts the clock (`webui._voice_stopped`), never the end of
+  her text; `silence_remarks` in `config/build_f.json` (`normal` 30 s, `rare` 90 s, `off`).
+
 - **Her day**: `brain/scenes.json` → `deep.daily_context` holds, per time slot of a weekday and a weekend, five
   possibilities; the brain picks one per day and slot, seeded by the date. `deep.current_scene` is where she is when
   the person talks to her on the stage; `deep.text_scene` is where she is when a message arrives from Discord or
@@ -142,7 +149,7 @@ and the interactive map at `/flow`. Socket protocol: [brain/PROTOCOL.md](brain/P
 
 | path | role |
 |---|---|
-| `launch.py` | the launcher: grace cleanup of an earlier instance of this folder, pre-flight (`--check`), start order, the one-console dashboard, Ctrl+C stops all; writes `logs/preflight.json`, `logs/instance.json`, `logs/launcher.log` |
+| `launch.py` | the launcher: grace cleanup of an earlier instance of this folder, pre-flight (`--check`), start order, the one-console dashboard (a core row that is not up says why: `start_failure`), Ctrl+C stops all; `--wipe-memory [--force]`, `--diagnose`; writes `logs/preflight.json`, `logs/instance.json`, `logs/launcher.log`, `logs/diagnose-*.zip` |
 | `Start_OpenAmika.bat` / `Stop_OpenAmika.bat` (`Stop_OpenAmika.ps1`) | start (reads `brain_python` from `settings.json`) / stop exactly what this folder started (by script path, `logs/instance.json`, and a launcher that this folder's brain python runs as a relative `launch.py`). The `.bat` ends with `pause`: from a terminal without a console use `powershell -NoProfile -ExecutionPolicy Bypass -File Stop_OpenAmika.ps1` |
 | `Tailscale_Serve_OpenAmika.bat` | maps `https://<machine>.<tailnet>.ts.net:8447/` to the speech port with Tailscale Serve (`off` removes it) |
 | `scripts/setup_windows.ps1` | Windows entry point: finds Python 3.11 (`py -3.11`, `python3.11`, `python`) and runs `scripts/setup_core.py` |
@@ -157,9 +164,9 @@ and the interactive map at `/flow`. Socket protocol: [brain/PROTOCOL.md](brain/P
 | `brain/f_memory.py`, `f_method.py`, `f_extract.py`, `methods.py` | evidence memory: quoted facts and original speech (no summaries), hybrid BM25 + embedding recall, extraction schema |
 | `brain/f_roles.py`, `config/llm_roles.json` | the four LLM roles, presets, validated selections |
 | `brain/f_openrouter.py`, `brain/f_ollama.py` | metered OpenRouter / Alibaba transports; the Ollama transport (`config/ollama.json`) |
-| `brain/f_usage.py`, `f_settle.py`, `f_controls.py`, `config/pricing.json` | per-call usage ledger, cost settlement, model and meter controls |
+| `brain/f_usage.py`, `f_settle.py`, `f_controls.py`, `config/pricing.json` | per-call usage ledger (`retire_dead`: requests no running work will finish), cost settlement, model and meter controls, Unlock, the silence-remarks setting |
 | `brain/f_persona.py` | Setup page persona editing and the OpenRouter key endpoint (writes `brain/.env`) |
-| `brain/f_reset.py` | wipe her memory / reset everything (idle-only, with backups) |
+| `brain/f_reset.py` | wipe her memory / reset everything (with backups): one short wait (`wait_s`), `force`, the busy reasons in words; `wipe_offline` for `launch.py --wipe-memory` while she is not running |
 | `brain/f_tools.py`, `brain/iot_disclaimer.py` | the tools layer (MCP client, capability block, post-speech clerk, agent jobs, agent health and autostart); the IoT safety statement rules |
 | `brain/embed_server.py` | local embedder (bge-m3 → 768 dims); `--check`, `--download` |
 | `brain/po_contract.py` = `speech/po_contract.py` | the shared output contract: emotion keys, SFX, parsing, template self-check |
@@ -495,8 +502,14 @@ Invoke-RestMethod -Method Post -Uri "$page/api/build_f/ollama/use" -ContentType 
 - Refusals: no `Origin` (or the wrong one) → 403 `Use the OpenAmika page for this action.`; Ollama down → 503
   `Ollama is not answering at http://127.0.0.1:11434 — is it running? …`; a model not detected → 400 `gemma3:27b is
   not a detected Ollama model for the <role> role — detect models first.`; `use` while she speaks or writes memory
-  → 409 `Wait for Amika to finish speaking, updating memory and applying service controls.` (power her off on the Use
-  page, retry).
+  → 409 `Wait for Amika to finish speaking, updating memory and applying service controls, or press Unlock …` (the
+  gateway) or `Model selection is busy: <what runs>. Wait a moment, or press Unlock (she stops what she is doing).`
+  with `code: "model_busy"` (the brain). Unlock = `POST /api/build_f/unlock` (header `X-Build-F-Action: unlock`,
+  body `{}` or `{"stop": false}`): retires the ledger rows no running work will finish, recovers memory jobs left in
+  a dispatch state, and (`stop`, the default) stops her turns, reflections and model streams; then the same switch
+  again with `"force": true` in the body and the header `X-Build-F-Force: 1` (calls in flight keep their model). A
+  request a crashed or restarted brain had begun never locks the switch: the brain retires those at start and before
+  every switch (2026-11-09; it used to hold until a restart 15 minutes later).
 - Check: `launch.py --check` then reads `OK API keys  no OpenRouter key, none needed: every role runs on Ollama …`,
   `OK Ollama  <version> at http://127.0.0.1:11434` and `OK Ollama model gemma3:27b  pulled · surface, deep,
   reflection, memory_write`, or `!! Ollama  not answering at … — start Ollama …` / `!! Ollama model gemma3:27b  not
@@ -531,6 +544,33 @@ logs/<name>.log`; red `exited with code N — see logs/<name>.log`. A normal sta
 setup is slower: new environments spend a minute or more on their first imports (on fresh clones speech answered
 after 1 to 2 minutes, the longer one on a busy PC), so speech may read yellow `no answer after 90s — still running`
 first; it turns green and the browser opens when it answers (`launch.py --no-browser` never opens it).
+A core row that is not up says why after its state (`… — the port is taken: …`, `the environment is broken: the Python
+module flask_socketio is missing — run the setup again (…)`, `the model does not fit in memory: …`, `the key is
+missing or refused: …`, else `its log ends with: <last line>`): `launch.start_failure` reads the pre-flight's port and
+Python rows, then `logs/<name>.log` since its last `--- … starting <name>:` line. The same text goes into
+`logs/preflight.json` as a `<name> start` check (the Setup page and the health light show it). An up brain that cannot
+answer reads yellow `up, but she cannot answer: the key is missing …` (or Ollama down, a model not pulled, `local model
+fit`: the biggest local Ollama model in use plus ~1.5 GB of context and her own ~6 GB, +4 GB with her eyes, against the
+GPU's memory from `nvidia-smi`).
+
+```powershell
+envs\brain\Scripts\python.exe launch.py --diagnose            # one zip for a help request; prints its path
+envs\brain\Scripts\python.exe launch.py --wipe-memory         # Setup → Wipe memory, for scripts (backup first)
+envs\brain\Scripts\python.exe launch.py --wipe-memory --force # she stops what she is doing first
+```
+
+`--diagnose` starts nothing: it runs the deep pre-flight again and writes `logs/diagnose-<date>-<time>.zip` with
+`preflight-now.json`, `preflight-last-start.json` (the last start's `logs/preflight.json`), `logs/<name>.log` (the last
+200 lines of each), `settings.json` (every value under a key-like name replaced by `<removed>`), `system.txt` (OS, the
+launcher's and each environment's Python, torch/CUDA in `envs/speech`, each GPU's name, driver and memory, free disk,
+the model of each role, the models Ollama has loaded) and `README.txt`. `brain/.env` is never in it, and every secret
+value the install holds (`brain/.env`, the bot tokens, the helpers' keys, `HF_TOKEN`) and anything shaped like a key or
+a bearer token is replaced by `<removed>` everywhere in it. Without `settings.json` it still writes the zip (logs and
+versions). `--wipe-memory` goes through the running gateway (`POST /api/build_f/wipe` with `Origin` set to it, so the
+stage is disconnected like a wipe from the page), else the brain; it waits up to 12 s for her to finish and exits 2
+with the busy reasons (then `--force`), 0 when wiped, 1 on failure. With no brain running it does the same
+transaction on disk (`f_reset.wipe_offline`: backup under `memory_f/backups/<id>/`, empty store and transcript, the
+ledger's open rows retired); a port held by something that does not answer like her brain refuses it.
 
 ### 5.6 Other setups
 
@@ -589,7 +629,8 @@ workspace in `config/alibaba_models.json`), `GEMINI_API_KEY` (legacy embedder), 
 `XAI_API_KEY`, `ANTHROPIC_API_KEY` (legacy direct providers, off by default).
 
 **`config/`**: `build_f.json` (identity and clock — §1; `memory_budget_chars`, `recent_turns`, `idle_reflection`,
-`auto_open_from_reflection`, `embedding_provider: "local"`, `embedding_url`, budgets), `llm_roles.json` (`options`,
+`silence_remarks` (`normal` | `rare` | `off`: her remark on a silence after 30 s, 90 s or never, counted from the
+moment her voice stops; Setup → You & Amika), `auto_open_from_reflection`, `embedding_provider: "local"`, `embedding_url`, budgets), `llm_roles.json` (`options`,
 `presets`, `selections` for `surface` / `deep` / `reflection` / `memory_write`; Setup → Brain edits it),
 `openrouter_models.json` / `alibaba_models.json` / `pricing.json` (catalogs and prices; Ollama is priced at 0),
 `word_replace.json` (`stt_to_llm` fixes, `llm_to_tts` pronunciations incl. the wizard's `role: user_name` rule),
@@ -604,8 +645,11 @@ workspace in `config/alibaba_models.json`), `GEMINI_API_KEY` (legacy embedder), 
 doll beside her while a task agent is on, power, mic, text box, camera button, model picker, the **Her helpers**
 card (jobs in flight; Approve / Deny / Answer / Stop for anything waiting on the person), the **Tool dialogue**
 card (Professional), cost and latency telemetry, the first-run wizard), **Setup** (`/setup`:
-system health, startup checks, brain and models, voice adapter grid, avatar banks, personality, vision, "Text her",
-danger zone: wipe her memory / reset everything; Simple and Professional modes), **Tools** (`/tools`: MCP servers
+system health, startup checks, brain and models (a switch refused as busy shows **Unlock**), voice adapter grid,
+avatar banks, You & Amika (names, city, her clock, "When you go quiet": the silence remarks), personality, vision,
+"Text her", danger zone: **Wipe memory** / **Reset everything** — the first attempt waits up to 12 s for her to
+finish, a busy answer names what runs and offers **Force wipe (she stops what she is doing)**; Simple and
+Professional modes), **Tools** (`/tools`: MCP servers
 and task agents with their health, Start and Test; per-tool policies `auto` / `confirm` / `deny`, Add a server and
 Raw config (tools.json) in Professional mode; the IoT switch and its safety statement), **About**
 (`/about`: MekaHime, supporting the project, licenses), and `/flow` (the interactive architecture map).
@@ -984,7 +1028,20 @@ each entry below was checked against the code):
 - Health light `OpenRouter key  no key saved` → §5.4. `Ollama (local brain)  not answering …` → start Ollama.
 - Text but no sound → click the page once (autoplay); TTS must be green.
 - Wizard says `Some part is missing — she can't fully work yet.` → fix the red rows on the Setup page.
-- Wipe / reset answers 409 → power her off on the Use page (she must be idle), wait a few seconds, retry.
+- She answers the same words twice → one utterance is committed once (2026-11-09): the Stop button (`{"type":
+  "stop"}`, `DialogSession.force_stop`) commits only speech still in progress, never the already-committed one
+  whose audio waits for her protect, and a commit repeating the previous one within 5 s (compared lower-cased,
+  without punctuation and spaces: `_duplicate_commit`) is dropped.
+- Wipe / reset answers 409 `Amika is busy: <what runs>` → it already waited; press **Force wipe** / **Force reset**
+  (she stops what she is doing; the backup is still taken), or `launch.py --wipe-memory --force`. Requests a crashed
+  brain left open in the ledger no longer cause it (retired at start and before every wipe), nor does a memory job
+  a dead worker left in `extracting` / `embedding` (recovered; the memory writer used to spin on it, holding its lock).
+  A forced wipe fences off a memory write or a reflection still waiting on its model (`MemoryRuntime._wipes`,
+  `F_WORK_EPOCH`): nothing they bring back reaches the empty store.
+- `Model selection is busy` that stays (it survived restarts before 2026-11-09) → **Unlock** next to the message
+  (§5.4).
+- Anything else: `launch.py --diagnose` (§5.5) and attach the zip; the dashboard's red core row and the Setup page's
+  `brain start` line say why the brain did not start.
 
 ## 10. Tests and CI
 
@@ -993,13 +1050,20 @@ envs\brain\Scripts\python.exe -m pip install -r requirements-dev.txt
 envs\brain\Scripts\python.exe -B -m pytest tests -k "not live" -p no:cacheprovider -q
 ```
 
-About 490 offline tests: the output contract and both streaming parsers (parity), prompt assembly, memory, the usage
+About 550 offline tests: the output contract and both streaming parsers (parity), prompt assembly, memory, the usage
 ledger, the control proxies, Fully Local (every role, her surface turn included, on the Ollama transport), the tools
 clerk (with agent autostart and health), the agents bridge against in-process
 fakes of Hermes and nanoMuse (`tests/test_agents_bridge.py`: jobs, approvals, questions, stop, health with
 `no_model` and `refused`, the copied-home session fallback, the bridge's own steps marked `internal`, a real MCP
 stdio round trip), the paper doll on the Use page (by source: only its state loop picks its motions, no bubble for
 the bridge's own steps), the IoT safety statement,
+the wipe and the model switch that are never refused by work that cannot finish (`tests/test_wipe_busy.py`: a turn
+that crashes for real in another process, a restart right after it, a dead turn thread, one short wait, the forced
+wipe with a memory write and a reflection still in flight, Unlock, an orphaned memory job; `tests/test_wipe_proxy_force.py`:
+the gateway's wait, force, Unlock, a turn whose brain connection dropped, playback acks during a control), the silence
+clock (`tests/test_silence_clock.py`: no remark while her voice plays, off / rare / normal, the ~4-sentence voice reply
+in the prompt), `launch.py --wipe-memory` / `--diagnose` and the rows that say why (`tests/test_launch_wipe_diagnose.py`), one commit
+per utterance (`tests/test_commit_once.py`),
 the launcher pre-flight (`tests/test_launch_preflight.py`: a fresh checkout, Ollama, a foreign voice server on her
 port, her own running ports, the time-zone database, the helpers' start commands, Hermes's key, the paper doll, the
 shipped `tools.example.json`), `setup_core.py` (`tests/test_setup_core.py`: a re-run after an interrupted first run,
