@@ -2836,6 +2836,97 @@
       "from": "Corvenais",
       "to": "Cor vey nay",
       "ci": true
+    },
+    {
+      "from": "lol",
+      "to": "haha",
+      "ci": true
+    },
+    {
+      "from": "lmao",
+      "to": "haha",
+      "ci": true
+    },
+    {
+      "from": "omg",
+      "to": "oh my god",
+      "ci": true
+    },
+    {
+      "from": "idk",
+      "to": "I don't know",
+      "ci": true
+    },
+    {
+      "from": "tbh",
+      "to": "to be honest",
+      "ci": true
+    },
+    {
+      "from": "btw",
+      "to": "by the way",
+      "ci": true
+    },
+    {
+      "from": "imo",
+      "to": "in my opinion",
+      "ci": true
+    },
+    {
+      "from": "brb",
+      "to": "be right back",
+      "ci": true
+    },
+    {
+      "from": "ngl",
+      "to": "not gonna lie",
+      "ci": true
+    },
+    {
+      "from": "irl",
+      "to": "in real life",
+      "ci": true
+    },
+    {
+      "from": "jk",
+      "to": "just kidding",
+      "ci": true
+    },
+    {
+      "from": "thx",
+      "to": "thanks",
+      "ci": true
+    },
+    {
+      "from": "pls",
+      "to": "please",
+      "ci": true
+    },
+    {
+      "from": "plz",
+      "to": "please",
+      "ci": true
+    },
+    {
+      "from": "np",
+      "to": "no problem",
+      "ci": true
+    },
+    {
+      "from": "vs",
+      "to": "versus",
+      "ci": true
+    },
+    {
+      "from": "etc",
+      "to": "et cetera",
+      "ci": true
+    },
+    {
+      "from": " & ",
+      "to": " and ",
+      "ci": true
     }
-  ]
+  ],
+  "tts_keep_caps": []
 }

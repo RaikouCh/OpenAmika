@@ -36,6 +36,7 @@ import stt_carry
 from tts_emotion import prefix_emotion
 from tts_sfx import parse_sfx_delta, resolve_sfx, list_files as sfx_list_files
 from tts_pause import pause_after
+from tts_text import voice_text
 import voice_adapter
 from silero_vad import load_silero_vad
 
@@ -45,7 +46,7 @@ logger = logging.getLogger("yumeha")
 # ----------------------------- word replacer ------------------------------ #
 # Standalone, clone-owned pronunciation and STT correction map.
 _WORDMAP_PATH = str(Path(__file__).resolve().parent.parent / "config" / "word_replace.json")
-_wordmap = {"mtime": None, "stt": [], "tts": []}
+_wordmap = {"mtime": None, "stt": [], "tts": [], "keep_caps": []}
 
 
 def _wordmap_compile(rows):
@@ -82,6 +83,8 @@ def _wordmap_refresh():
             data = json.load(f) or {}
         _wordmap["stt"] = _wordmap_compile(data.get("stt_to_llm"))
         _wordmap["tts"] = _wordmap_compile(data.get("llm_to_tts"))
+        keep = data.get("tts_keep_caps")
+        _wordmap["keep_caps"] = [str(k) for k in keep] if isinstance(keep, list) else []
         _wordmap["mtime"] = mt
         logger.info(f"[wordmap] {len(_wordmap['stt'])} stt + {len(_wordmap['tts'])} tts rules")
     except Exception as e:
@@ -89,12 +92,16 @@ def _wordmap_refresh():
 
 
 def apply_wordmap(text, which):
-    """which = 'stt' (transcript -> Hane) or 'tts' (reply -> Freya)."""
+    """which = 'stt' (transcript -> Hane) or 'tts' (reply -> Freya). For 'tts' the rules are followed by
+    speech/tts_text.voice_text: capitals for emphasis are lower-cased (acronyms and "tts_keep_caps" stay), dashes
+    become commas and ellipses full stops, so her voice neither spells "YOUR" nor reads "dot dot dot"."""
     if not text:
         return text
     _wordmap_refresh()
     for pat, to in _wordmap.get(which) or []:
         text = pat.sub(lambda m, _t=to: _t, text)      # literal replacement (no group refs)
+    if which == "tts":
+        text = voice_text(text, _wordmap.get("keep_caps") or ())
     return text
 logger.setLevel(logging.INFO)
 if not logger.handlers:
