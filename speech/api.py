@@ -1370,6 +1370,10 @@ class HaneClient:
             # P2: a micro-pause partial. The brain runs the surface at once and starts the deep only
             # after our "commit" for this id (or after speculative_deep_wait_s).
             payload["speculative"] = True
+        if not getattr(self.session, "voice_output", True):
+            # Voice output is off on the page: her reply is read, not heard, so the brain keeps the long text form
+            # (a spoken reply is asked for about four sentences, webui.VOICE_REPLY_NOTE).
+            payload["voice"] = False
         self.session._contexts_sent[turn_id] = (self.session._context_revision, self.session._pending_context)
         if len(self.session._contexts_sent) > 100:
             self.session._contexts_sent.pop(next(iter(self.session._contexts_sent)))

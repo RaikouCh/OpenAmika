@@ -702,6 +702,20 @@
     finally { $("pHear").disabled = false; }
   });
 
+  // her silence remarks ("you're quiet"): off / rare / normal, counted from the moment her voice stops
+  function showSilence(r) {
+    $("pSilence").value = r.silence_remarks || "normal";
+    $("pSilenceNote").textContent = r.interval_s ? "After about " + r.interval_s + " s of quiet, counted from the moment her voice stops."
+      : "She does not remark on silences.";
+  }
+  getJSON("/api/build_f/conversation").then(showSilence).catch(() => { $("pSilenceNote").textContent = "unavailable (is the brain running?)"; });
+  $("pSilence").addEventListener("change", async () => {
+    try {
+      showSilence(await postAction("/api/build_f/conversation", "conversation", { silence_remarks: $("pSilence").value }));
+      toast("Saved — applies at once.");
+    } catch (error) { toast(String(error.message || error), true); }
+  });
+
   $("pSave").addEventListener("click", async () => {
     const target = $("pTarget").value;
     try {

@@ -203,6 +203,15 @@
         <input type="text" id="pSayAs" maxlength="80" placeholder="spell it the way it sounds" autocomplete="off"></div>
       <button class="btn small" id="pHear">🔊 Hear her say it</button>
     </div>
+    <div class="form-row" style="margin-bottom:12px;">
+      <div class="field" style="flex:1"><label>When you go quiet, she says something</label>
+        <select id="pSilence">
+          <option value="normal">Normal</option>
+          <option value="rare">Rare (three times as long)</option>
+          <option value="off">Off</option>
+        </select></div>
+      <span class="card-hint" id="pSilenceNote" style="flex:2">Counted from the moment her voice stops.</span>
+    </div>
     <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
       <button class="btn primary" id="pIdentitySave">Save</button>
       <span class="card-hint mono" id="pClock"></span>

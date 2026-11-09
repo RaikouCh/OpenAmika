@@ -902,6 +902,10 @@ def install(g):
     auto_open=bool(cfg.get('auto_open_from_reflection',False))
     idle_reflection=bool(cfg.get('idle_reflection',False))
     g['F_AUTO_OPEN'],g['F_IDLE_REFLECTION']=auto_open,idle_reflection
+    # How often she remarks on a silence (Setup → You & Amika; f_controls /api/build_f/conversation hot-applies it):
+    # "normal" every IDLE_TRIGGER_SECONDS of silence after her voice stops, "rare" three times that, "off" never.
+    from f_controls import silence_remarks_value
+    g['SILENCE_REMARKS']=silence_remarks_value(cfg.get('silence_remarks'))
     if not auto_open:g['_start_open_gen']=lambda *args,**kwargs:None
     elif callable(g.get('_start_open_gen')):
         start_open=g['_start_open_gen']
@@ -1035,6 +1039,11 @@ def install(g):
     g['f_mark_complete']=lambda tid:mark_complete(g,tid,archive_turn)
     def speech_done(data=None):
         tid=(data or {}).get('turn_id')
+        # Her voice has stopped (the stage played the turn's last clip; a text channel delivered it): the silence
+        # clock of the "you're quiet" remark starts now, not when her text ended (webui._voice_stopped).
+        voice_stopped=g.get('_voice_stopped')
+        if callable(voice_stopped):
+            with contextlib.suppress(Exception):voice_stopped(tid)
         with g['_hist_lock']:
             t=g['_find_turn'](tid)
             if t:t['f_speech_done']=True;g['_save_history']()
