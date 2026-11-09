@@ -133,12 +133,12 @@ MODEL_DIR = os.getenv(
     os.path.join(os.path.dirname(__file__), "models"),
 )
 
-logger.info(f"Loading Yumeha model from {MODEL_DIR} on {DEVICE} ...")
+logger.info(f"Loading the speech recognition model (SenseVoiceSmall) from {MODEL_DIR} on {DEVICE} ...")
 load_start = time.time()
 m, kwargs = SenseVoiceSmall.from_pretrained(model=MODEL_DIR, device=DEVICE)
 m.eval()
 load_elapsed = time.time() - load_start
-logger.info(f"Model loaded in {load_elapsed:.2f}s")
+logger.info(f"Speech recognition model loaded in {load_elapsed:.2f}s")
 
 logger.info("Loading Silero VAD ...")
 _vad_load_start = time.time()
@@ -153,7 +153,8 @@ APP_NAME = "OpenAmika"
 
 app = FastAPI(
     title=f"{APP_NAME} Chat and Speech",
-    description="梦羽 — 极速多语言语音识别服务",
+    description="OpenAmika's speech gateway: speech recognition (SenseVoiceSmall), her web pages, and the link to her "
+                "brain and her voice",
     version="1.0.0",
 )
 
@@ -281,13 +282,13 @@ async def health():
 
 @app.post("/api/v1/asr")
 async def asr(
-    files: Annotated[List[UploadFile], File(description="音频文件")],
-    keys: Annotated[Optional[str], Form(description="文件名，逗号分隔")] = None,
-    lang: Annotated[Language, Form(description="语言")] = "auto",
-    use_itn: Annotated[bool, Form(description="逆文本正则化")] = True,
+    files: Annotated[List[UploadFile], File(description="audio files")],
+    keys: Annotated[Optional[str], Form(description="a name for each file, comma-separated")] = None,
+    lang: Annotated[Language, Form(description="language (auto detects it)")] = "auto",
+    use_itn: Annotated[bool, Form(description="inverse text normalization: numbers and punctuation as written")] = True,
 ):
     if not files:
-        raise HTTPException(status_code=400, detail="未提供音频文件")
+        raise HTTPException(status_code=400, detail="No audio file was sent.")
 
     request_start = time.time()
     audios = []
@@ -312,7 +313,7 @@ async def asr(
             audios.append(audio_tensor)
             audio_lengths.append(len(audio_tensor) / TARGET_FS)
         except Exception as e:
-            raise HTTPException(status_code=400, detail=f"处理音频文件 {file.filename} 失败: {str(e)}")
+            raise HTTPException(status_code=400, detail=f"Could not read the audio file {file.filename}: {str(e)}")
 
     if lang == "":
         lang = "auto"
@@ -335,7 +336,7 @@ async def asr(
         )
     except Exception as e:
         logger.error(f"Inference failed: {e}")
-        raise HTTPException(status_code=500, detail=f"推理失败: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Speech recognition failed: {str(e)}")
 
     inference_elapsed = time.time() - inference_start
     total_elapsed = time.time() - request_start
@@ -3439,7 +3440,7 @@ class DialogSession:
                 logger.warning(f"[dlg {self._peer}] AI error (no turn_id): {data}")
             else:
                 logger.warning(
-                    f"[dlg {self._peer}] AI {event_type} 没带 turn_id，已丢弃。"
+                    f"[dlg {self._peer}] AI {event_type} came without a turn_id: dropped"
                 )
             return
 

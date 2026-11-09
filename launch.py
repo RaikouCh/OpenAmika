@@ -67,7 +67,7 @@ LEVEL_RANK = {'ok': 0, 'warn': 1, 'err': 2}
 BUSY_WINDOW_S = 2.5          # a log line newer than this = "working"
 # log lines that are not activity (health polls and the like); the log files keep everything
 NOISE = {
-    'brain': re.compile(r'HTTP/1\.1" 200|Processing request of type|HTTP Request: GET .*(health|threads)|清除 \d+ 条未保护'),
+    'brain': re.compile(r'HTTP/1\.1" 200|Processing request of type|HTTP Request: GET .*(health|threads)|cleared \d+ unprotected turn'),
     'speech': re.compile(r'GET /api/build_f|GET /health|GET /api/tts_probe|GET /api/preflight|/api/evo/|HTTP/1\.1" 200|\[lang\] expected|connection (open|closed)|WebSocket'),
     'hermes': re.compile(r'aiohttp\.access|auxiliary_client|auxiliary_unavailable'),
     'nanomuse': re.compile(r'GET /api/health|GET /api/threads'),

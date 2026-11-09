@@ -232,7 +232,7 @@ def reload_template():
     _template_cache = po_contract.read_text_bom(path).strip()
     if not _template_cache:
         raise ValueError(f"{TEMPLATE_FILE} 内容为空")
-    print(f"[Hane] 模板已加载: {TEMPLATE_FILE} ({len(_template_cache)} 字符)")
+    print(f"[Hane] deep template loaded: {TEMPLATE_FILE} ({len(_template_cache)} characters)")
 
 
 def load_surface_template() -> str:
@@ -248,7 +248,7 @@ def reload_surface_template():
     if not path.exists():
         raise FileNotFoundError(f"表层模板不存在: {SURFACE_TEMPLATE_FILE}")
     _surface_template_cache = po_contract.read_text_bom(path).strip()
-    print(f"[Hane] 表层模板已加载: {SURFACE_TEMPLATE_FILE} ({len(_surface_template_cache)} 字符)")
+    print(f"[Hane] surface template loaded: {SURFACE_TEMPLATE_FILE} ({len(_surface_template_cache)} characters)")
 
 
 def load_thinking_template() -> str:
@@ -264,7 +264,7 @@ def reload_thinking_template():
     if not path.exists():
         raise FileNotFoundError(f"思考层模板不存在: {THINKING_TEMPLATE_FILE}")
     _thinking_template_cache = po_contract.read_text_bom(path).strip()
-    print(f"[Hane] 思考层模板已加载: {THINKING_TEMPLATE_FILE} ({len(_thinking_template_cache)} 字符)")
+    print(f"[Hane] reflection template loaded: {THINKING_TEMPLATE_FILE} ({len(_thinking_template_cache)} characters)")
 
 
 def run_template_check() -> dict:
@@ -432,7 +432,7 @@ def _load_model_prefs():
     except FileNotFoundError:
         return
     except Exception as e:
-        print(f"[Hane] 读取模型偏好失败: {e}")
+        print(f"[Hane] could not read the model preferences: {e}")
         return
     if d.get("surface") in AVAILABLE_MODELS:
         DEFAULT_SURFACE_MODEL = d["surface"]
@@ -440,7 +440,7 @@ def _load_model_prefs():
         DEFAULT_DEEP_MODEL = d["deep"]
     if d.get("thinking") in AVAILABLE_MODELS:
         DEFAULT_THINKING_MODEL = d["thinking"]
-    print(f"[Hane] 模型偏好已载入: 表层={DEFAULT_SURFACE_MODEL} 深层={DEFAULT_DEEP_MODEL} 思考={DEFAULT_THINKING_MODEL}")
+    print(f"[Hane] model preferences loaded: surface={DEFAULT_SURFACE_MODEL} deep={DEFAULT_DEEP_MODEL} reflection={DEFAULT_THINKING_MODEL}")
 
 
 def _save_model_prefs():
@@ -452,7 +452,7 @@ def _save_model_prefs():
              "thinking": DEFAULT_THINKING_MODEL}, ensure_ascii=False, indent=2),
             encoding="utf-8")
     except Exception as e:
-        print(f"[Hane] 保存模型偏好失败: {e}")
+        print(f"[Hane] could not save the model preferences: {e}")
 
 
 _load_model_prefs()   # 开机即读回上次选择（AVAILABLE_MODELS/默认都已在上面定义好）
@@ -535,7 +535,7 @@ def _init_current_cp():
         with _hist_lock:
             existing = [t for t in CONVERSATION_HISTORY if t.get("checkpoint") == _CURRENT_CP]
         _CURRENT_TURN_NUM = len(existing)
-    print(f"[Hane] 当前检查点: {_CURRENT_CP}, 已有 {_CURRENT_TURN_NUM} 轮")
+    print(f"[Hane] current checkpoint: {_CURRENT_CP}, {_CURRENT_TURN_NUM} turn(s) so far")
 
 def _session_minutes(h: int, m: int = 0) -> int:
     """将小时+分钟转为会话内分钟数（5点=0, 6点=60, ..., 4点=1380）用于顺序比较"""
@@ -566,20 +566,20 @@ def _catchup_range(from_h: int, from_cp: int, to_h: int, to_cp: int):
                 _CURRENT_CP = _make_raw_cp(_session_date(), nh, ncp)
                 _CURRENT_TURN_NUM = 0
 
-            print(f"[Hane] 检查点推进 → {_CURRENT_CP}")
+            print(f"[Hane] checkpoint advanced → {_CURRENT_CP}")
 
             if turns:
                 history = _build_history_from_turns(turns)
-                print(f"[Hane] 整理 10min {ck} ({len(turns)} 轮)")
+                print(f"[Hane] consolidating 10min {ck} ({len(turns)} turn(s))")
                 ok = _run_consolidation("10min", ck, history_override=history)
                 if not ok:
-                    print(f"[Hane] 重试 10min {ck}")
+                    print(f"[Hane] retrying 10min {ck}")
                     _time.sleep(3)
                     ok = _run_consolidation("10min", ck, history_override=history)
                 if ok:
                     _mark_cp_done(ck)
                 else:
-                    print(f"[Hane] 整理 {ck} 最终失败，跳过")
+                    print(f"[Hane] consolidating {ck} failed for good: skipped")
             else:
                 _mark_cp_done(ck)
         else:
@@ -600,7 +600,7 @@ def _startup_catchup():
         today_turns = [t for t in CONVERSATION_HISTORY
                        if _session_date_from_ts(t.get("ts", "1970-01-01 12:00:00")) == sd]
     if not today_turns:
-        print("[Hane] 启动检查: 当前会话无对话记录，跳过")
+        print("[Hane] start check: no conversation in this session yet: skipped")
         return
 
     latest = today_turns[-1]
@@ -612,14 +612,14 @@ def _startup_catchup():
 
     trigger_min = latest_cp * 10 - 1
     if _session_minutes(now.hour, now.minute) < _session_minutes(latest_h, trigger_min):
-        print(f"[Hane] 启动检查: 最新检查点 {latest_ck} 尚未到触发时间，跳过")
+        print(f"[Hane] start check: the latest checkpoint {latest_ck} is not due yet: skipped")
         return
 
     to_h = now.hour
     to_cp = now.minute // 10 + 1
-    print(f"[Hane] 启动补整理: 从 {latest_ck} 到 {to_h} {to_cp}")
+    print(f"[Hane] catching up at start: from {latest_ck} to {to_h} {to_cp}")
     _catchup_range(latest_h, latest_cp, to_h, to_cp)
-    print("[Hane] 启动补整理完成")
+    print("[Hane] catching up at start: done")
 
 
 def _session_date(now: datetime = None) -> str:
@@ -645,9 +645,9 @@ def _load_history():
             with _hist_lock:
                 CONVERSATION_HISTORY.clear()
                 CONVERSATION_HISTORY.extend(data.get("turns", []))
-            print(f"[Hane] 对话记录已加载: {len(CONVERSATION_HISTORY)} 轮")
+            print(f"[Hane] conversation history loaded: {len(CONVERSATION_HISTORY)} turn(s)")
         except Exception as e:
-            print(f"[Hane] 对话记录加载失败: {e}")
+            print(f"[Hane] could not load the conversation history: {e}")
 
 
 # R21：json.dumps 在 _hist_lock 里做（快照一致），写盘（.tmp + os.replace）在 _hist_lock 外做。
@@ -687,7 +687,7 @@ def _save_history():
                 os.replace(tmp, MEMORY_FILE)
             except OSError as e:
                 # Windows 上目标文件被占用时 replace 会失败：退回直接覆盖（与旧行为一致）。
-                print(f"[Hane] 对话记录原子替换失败，改为直接写入: {e}")
+                print(f"[Hane] could not replace the conversation history in one step, writing it directly: {e}")
                 MEMORY_FILE.write_text(payload, encoding="utf-8")
                 with contextlib.suppress(OSError):
                     tmp.unlink()
@@ -716,10 +716,10 @@ def _load_consolidated():
                         h = int(parts[0])
                         for i in range(1, 7):
                             _COMPLETED_CPS.add(f"{h} {i}")
-            print(f"[Hane] 整理记忆已加载: {len(CONSOLIDATED_MEMORIES)} 条, "
-                  f"已完成检查点: {len(_COMPLETED_CPS)} 个")
+            print(f"[Hane] consolidated memories loaded: {len(CONSOLIDATED_MEMORIES)}, "
+                  f"checkpoints done: {len(_COMPLETED_CPS)}")
         except Exception as e:
-            print(f"[Hane] 整理记忆加载失败: {e}")
+            print(f"[Hane] could not load the consolidated memories: {e}")
 
 
 def _save_consolidated():
@@ -739,9 +739,9 @@ def _load_thinking_log():
             with _think_lock:
                 THINKING_LOG.clear()
                 THINKING_LOG.extend(data.get("entries", []))
-            print(f"[Hane] 思考层日志已加载: {len(THINKING_LOG)} 条")
+            print(f"[Hane] reflection log loaded: {len(THINKING_LOG)} entries")
         except Exception as e:
-            print(f"[Hane] 思考层日志加载失败: {e}")
+            print(f"[Hane] could not load the reflection log: {e}")
 
 
 def _save_thinking_log():
@@ -862,7 +862,7 @@ def mark_turn_interrupted(turn_id: str, surface_partial: str = "",
             t["deep_raw"] = deep_partial
         t["interrupted"] = True
     _save_history()
-    print(f"[Hane] 打断 turn {turn_id}")
+    print(f"[Hane] interrupted turn {turn_id}")
 
 
 def discard_turn(turn_id: str) -> bool:
@@ -875,7 +875,7 @@ def discard_turn(turn_id: str) -> bool:
         else:
             return False
     _save_history()
-    print(f"[Hane] 丢弃 turn {turn_id}")
+    print(f"[Hane] dropped turn {turn_id}")
     return True
 
 
@@ -1833,7 +1833,7 @@ def run_thinking_once(deep_request: str = "", on_guidance=None,
                     try:
                         on_guidance(parse_thinking_response(norm[:am.start()]))
                     except Exception as e:
-                        print(f"[Hane] 思考层 on_guidance 回调出错: {e}")
+                        print(f"[Hane] reflection on_guidance callback failed: {e}")
                     break
 
     parsed = parse_thinking_response(raw)
@@ -1842,7 +1842,7 @@ def run_thinking_once(deep_request: str = "", on_guidance=None,
         try:
             on_guidance(parsed)
         except Exception as e:
-            print(f"[Hane] 思考层 on_guidance 回调出错: {e}")
+            print(f"[Hane] reflection on_guidance callback failed: {e}")
 
     with _hist_lock:
         if target_turn_id is not None:
@@ -1915,16 +1915,16 @@ def _maybe_fire_open(open_content: str):
         return False
     sid = _LAST_SID
     if not sid:
-        print("[Hane] 开口：无活跃客户端，跳过主动发声")
+        print("[Hane] speaking first: no page connected: skipped")
         return False
     with _ws_active_lock:
         busy = bool(_ws_active)
     if busy:
-        print("[Hane] 开口：有生成在进行，跳过本次主动发声")
+        print("[Hane] speaking first: a reply is being written: skipped this time")
         return False
     cue = _wrap_open_cue(open_content)
     tid = _start_open_gen(sid, cue, DEFAULT_SURFACE_MODEL, DEFAULT_DEEP_MODEL)
-    print(f"[Hane] 开口：已起主动发声轮 {tid}" if tid else "[Hane] 开口：未起主动发声轮（已关闭或无内容）")
+    print(f"[Hane] speaking first: started turn {tid}" if tid else "[Hane] speaking first: no turn started (switched off, or nothing to say)")
     return tid or False
 
 
@@ -1959,7 +1959,7 @@ def trigger_thinking_async(deep_request: str = "", target_turn_id: str = None,
         return False
     with _think_state_lock:
         if _thinking_inflight >= _THINKING_MAX:
-            print(f"[Hane] 思考层并发已满（{_THINKING_MAX}），跳过本次触发（{reason}）")
+            print(f"[Hane] reflection busy ({_THINKING_MAX} running): skipped this trigger ({reason})")
             return False
         _thinking_inflight += 1
         _pending_seq += 1
@@ -1977,10 +1977,10 @@ def trigger_thinking_async(deep_request: str = "", target_turn_id: str = None,
             entry = run_thinking_once(deep_request=deep_request,
                                       target_turn_id=target_turn_id)
             ch = entry.get("channels") or "-"
-            print(f"[Hane] 思考层完成（{reason}），通道={ch}，"
-                  f"挂到轮次={entry.get('after_turn_id')}")
+            print(f"[Hane] reflection done ({reason}), channels={ch}, "
+                  f"after turn={entry.get('after_turn_id')}")
         except Exception as e:
-            print(f"[Hane] 思考层后台运行出错（{reason}）: {e}")
+            print(f"[Hane] reflection failed in the background ({reason}): {e}")
         finally:
             with _think_state_lock:
                 _thinking_inflight -= 1
@@ -2049,9 +2049,9 @@ def _fire_pending_continue(turn_id: str) -> None:
         return
     sid = req.get("sid") or _LAST_SID
     if not sid:
-        print("[Hane] 【接着说】无可用 sid，跳过自续说")
+        print("[Hane] keep-talking marker: no page connected: skipped")
         return
-    print(f"[Hane] 【接着说】turn {turn_id} 音频已播完 → 起自续说轮")
+    print(f"[Hane] keep-talking marker: turn {turn_id} finished playing → starting her follow-up turn")
     _start_continue_gen(sid)
 
 
@@ -2418,7 +2418,7 @@ def _run_consolidation(level: str, checkpoint: str,
                        history_override: str = None):
     """旧版分时段整理（记忆1.txt）已移除（R22）；F 证据库逐轮写入取代它。
     这里只保留入口，供仍被 f_bridge 停用的补整理/自动整理代码安全调用。"""
-    print(f"[Hane] 旧版记忆整理已停用，跳过 {level} {checkpoint}")
+    print(f"[Hane] the old memory consolidation is off: skipped {level} {checkpoint}")
     return False
 
 
@@ -2530,7 +2530,7 @@ def _try_hour_consolidation(hour: int):
                 turns = _get_turns_for_checkpoint(ck)
                 if turns:
                     history = _build_history_from_turns(turns)
-                    print(f"[Hane] 小时整理前补救 10min {ck}")
+                    print(f"[Hane] catching up 10min {ck} before the hourly consolidation")
                     ok = _run_consolidation("10min", ck, history_override=history)
                     if ok:
                         _mark_cp_done(ck)
@@ -2542,7 +2542,7 @@ def _try_hour_consolidation(hour: int):
         if has_any:
             history = _build_history_from_memories(cps, level="10min")
             hour_cp = f"{hour} 0"
-            print(f"[Hane] 链式触发: hour {hour_cp}")
+            print(f"[Hane] chained trigger: hour {hour_cp}")
             _run_consolidation("hour", hour_cp, hour=hour, history_override=history)
     _try_period_consolidation(_get_period(hour))
 
@@ -2573,7 +2573,7 @@ def _try_period_consolidation(period_name: str):
         return
     history = _build_history_from_memories(hour_cps, level="hour")
     period_cp = f"period_{period_name}"
-    print(f"[Hane] 链式触发: period {period_name}")
+    print(f"[Hane] chained trigger: period {period_name}")
     _run_consolidation("period", period_cp, period_name=period_name,
                        hour=start_h, history_override=history)
 
@@ -2589,7 +2589,7 @@ def _auto_consolidation_loop():
             sd = _session_date(now)
 
             if sd != _current_session:
-                print(f"[Hane] 会话日期变化 {_current_session} → {sd}，重置检查点状态")
+                print(f"[Hane] the session date changed {_current_session} → {sd}: checkpoints reset")
                 _COMPLETED_CPS.clear()
                 last_triggered_cp = None
                 _current_session = sd
@@ -2609,7 +2609,7 @@ def _auto_consolidation_loop():
                 last_triggered_cp = cp_id
 
         except Exception as e:
-            print(f"[Hane] 自动整理循环异常: {e}")
+            print(f"[Hane] the auto-consolidation loop failed: {e}")
 
         _time.sleep(5)
 
@@ -2725,7 +2725,7 @@ def set_relationship_stage():
     if not (0 <= idx < len(stages)):
         return jsonify({"error": f"阶段索引 {idx} 超出范围 0-{len(stages)-1}"}), 400
     _RELATIONSHIP_STAGE = idx
-    print(f"[Hane] 关系阶段切换 → {stages[idx]['name']}")
+    print(f"[Hane] relationship stage → {stages[idx]['name']}")
     return jsonify({"current": _RELATIONSHIP_STAGE, "name": stages[idx]["name"]})
 
 
@@ -2741,7 +2741,7 @@ def clear_memory():
         THINKING_LOG.clear()
         _save_thinking_log()
     _init_current_cp()
-    print("[Hane] 记忆已清空")
+    print("[Hane] memory wiped")
     return jsonify({"status": "ok"})
 
 
@@ -2857,9 +2857,9 @@ def _idle_watch_loop():
                     reason=f"空闲{IDLE_TRIGGER_SECONDS}秒",
                     set_pending=False,  # 不是她的【想想】，别污染下一轮「我心想」
                 ):
-                    print(f"[Hane] 空闲{IDLE_TRIGGER_SECONDS}秒，已戳思考层决定是否主动开口")
+                    print(f"[Hane] quiet for {IDLE_TRIGGER_SECONDS} s: asked the reflection whether she speaks first")
         except Exception as e:
-            print(f"[Hane] 空闲监视出错: {e}")
+            print(f"[Hane] the quiet watch failed: {e}")
 
 
 def _cancel_turn_gen(turn_id: str, reason: str) -> bool:
@@ -2889,7 +2889,7 @@ def _prune_unprotected():
         if tid:
             _cancel_turn_gen(tid, "discard")
     if removed_ids:
-        print(f"[Hane] 清除 {len(removed_ids)} 条未保护 turn")
+        print(f"[Hane] cleared {len(removed_ids)} unprotected turn(s)")
     return len(removed_ids)
 
 
@@ -2905,7 +2905,7 @@ def _protect_latest() -> bool:
         tid = t.get("turn_id")
         has_pending = bool(t.get("pending_think"))
     _save_history()
-    print(f"[Hane] 保护 turn {tid}")
+    print(f"[Hane] protected turn {tid}")
     # 这一轮深层喊过【想想】但当时没起思考层（等保护）：现在受保护了，触发慢通道。
     if has_pending:
         _fire_pending_think(tid)
@@ -3455,7 +3455,7 @@ def ws_connect():
     global _LAST_SID
     _LAST_SID = request.sid
     _mark_activity()
-    print(f"[Hane WS] 客户端已连接: {request.sid}")
+    print(f"[Hane WS] page connected: {request.sid}")
 
 
 @socketio.on("disconnect")
@@ -3471,7 +3471,7 @@ def ws_disconnect():
             telemetry.forget_sid(sid)
         except Exception:
             pass
-    print(f"[Hane WS] 客户端断开: {sid}")
+    print(f"[Hane WS] page disconnected: {sid}")
     with _ws_active_lock:
         # 只取消本 sid 的生成；entry 由后台线程 finally 段自己从表里 pop
         for entry in _ws_active.values():
