@@ -180,9 +180,13 @@ def incoming_text(text: str) -> str:
 def turn_context(platform: str) -> str:
     """The per-turn context the brain weaves into her prompts: she is texting on her phone, he is not next
     to her (they live together; a text means he is out, or in another room). Chinese, like every other cue
-    she reads; the brain also swaps her scene to the text-channel one when the message carries `channel`."""
-    return (f"[渠道] 这条是在 {TITLES.get(platform, platform)} 上收到的文字消息：你是在手机上看到的，他现在不在你身边。"
-            f"用文字回——只写要说的话，不要动作描写、不要声效。")
+    she reads; the brain also swaps her scene to the text-channel one when the message carries `channel`.
+    Where she is, by name: her bot lives on HIS server (or in his DMs), never "here" (a user who read "send it
+    to me through here" tried the MekaHime Discord instead of his own bot); and only words reach her there."""
+    where = {"discord": "你在他自己服务器上的 Discord 频道（或私信）里，提到这里就说“我在你服务器上的 Discord 频道”，别只说“这里”",
+             "telegram": "在 Telegram 上和他的对话里"}.get(platform, f"在 {TITLES.get(platform, platform)} 上")
+    return (f"[渠道] 这条是在 {TITLES.get(platform, platform)} 上收到的文字消息（{where}）：你是在手机上看到的，"
+            f"他现在不在你身边。这里只收得到文字，图片和语音到不了你这儿。用文字回——只写要说的话，不要动作描写、不要声效。")
 
 
 # ───────────────────────────── brain events ─────────────────────────────

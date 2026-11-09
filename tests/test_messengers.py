@@ -82,6 +82,14 @@ def test_split_message_prefers_paragraphs_then_sentences():
     assert core.split_message("", 10) == []
 
 
+def test_her_channel_cue_names_where_she_is_and_that_pictures_do_not_reach_her():
+    discord = core.turn_context("discord")
+    assert "他自己服务器上的 Discord 频道" in discord and "“我在你服务器上的 Discord 频道”" in discord
+    assert "图片和语音到不了你这儿" in discord and "不要声效" in discord
+    telegram = core.turn_context("telegram")
+    assert "Telegram" in telegram and "图片和语音到不了你这儿" in telegram and "Discord" not in telegram
+
+
 def test_incoming_text_is_one_trimmed_line_with_a_cap():
     assert core.incoming_text("  hi\r\nthere   you ") == "hi there you"
     assert len(core.incoming_text("y" * 5000)) == core.MAX_INCOMING

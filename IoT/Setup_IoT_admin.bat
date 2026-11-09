@@ -1,4 +1,5 @@
 @echo off
+rem OPTIONAL, only for her smart home (Zigbee plugs): talking to her, her voice and her setup never need this.
 rem Smart-home setup that needs administrator rights (Windows asks for permission):
 rem   Install_CP210x_driver.ps1  - driver for the SONOFF Zigbee Dongle Plus MG24 (gives it a COM port):
 rem                                tries Windows Update, then a CP210x*Driver*.zip from your Downloads or this folder
