@@ -11,6 +11,7 @@ config/messengers.json
 # ── Private runtime data (memories, usage ledger, logs, machine-local state) ──
 memory_f/
 brain/memories/
+backups/
 logs/
 *.log
 *.sqlite
