@@ -32,6 +32,9 @@ about 40 GB of free disk?
 - **Yes** → STEP 1.
 - **No** → talk to her in your browser instead: [mekahime.com/amika](https://www.mekahime.com/amika).
 
+**Rather watch it?** The same 7 steps as a 3-minute video, with fixes and answers for when you get stuck:
+[mekahime.com/openamikatutorial](https://www.mekahime.com/openamikatutorial).
+
 ### STEP 1 — Install Python 3.11 and Git
 
 Takes about 5 minutes.
@@ -161,6 +164,24 @@ You see: `Updated. Start her: double-click Start_OpenAmika.bat`.
 
 - If you see `She is running` → STEP 1 first.
 - If it lists files "with your own changes" → your version is kept. Her memory is safe.
+
+**No `Update_OpenAmika.bat` in her folder?** You installed her before v1.1.0 (9 November 2026). Do STEP 2 this
+way, one time. Open her folder, right-click an empty spot → **Open in Terminal** (Windows 10: click the folder's
+address bar, type `powershell`, press **Enter**). Paste each line and press **Enter**:
+
+```powershell
+git fetch origin
+```
+
+```powershell
+git show origin/main:scripts/update_openamika.ps1 > scripts\update_once.ps1
+```
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\update_once.ps1
+```
+
+It is the same update, with the same backup. After it, `Update_OpenAmika.bat` is in her folder.
 
 **I downloaded the ZIP**
 

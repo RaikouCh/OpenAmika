@@ -67,6 +67,9 @@ bằng tiếng đó (`llama3.3:70b`, chẳng hạn, thì không hỗ trợ). Cá
 
 ## Cài đặt cô ấy
 
+**Muốn xem video?** Hướng dẫn 7 bước kèm video 3 phút, cùng các câu hỏi thường gặp và cách khắc phục (trang tiếng
+Anh): [mekahime.com/openamikatutorial](https://www.mekahime.com/openamikatutorial).
+
 Mở PowerShell (cửa sổ thường, không chạy với quyền administrator) và chạy từng dòng một. Các lệnh này sẽ cài đặt
 cô ấy vào `C:\OpenAmika`, một thư mục đường dẫn ngắn mà OneDrive không đồng bộ:
 

@@ -683,6 +683,15 @@ envs\brain\Scripts\python.exe scripts\setup_tts.py
 envs\brain\Scripts\python.exe launch.py --check
 ```
 
+A clone from before 2026-11-09 (the `v1.0.0` tag included) has neither `Update_OpenAmika.bat` nor the script. The
+person's way there, once (README "Updating her"): `git fetch origin`, then
+`git show origin/main:scripts/update_openamika.ps1 > scripts\update_once.ps1`, then
+`powershell -ExecutionPolicy Bypass -File scripts\update_once.ps1`. The copy has to be in `scripts\` (the script takes
+the parent of its own folder as her folder) and under a name the update does not bring (git does not pull over an
+untracked file of the same name); it stays behind, untracked. Prefer it to the three git commands above for such a
+clone: when `git stash pop` conflicts in `config/build_f.json` (the person changed a line next to one the update
+adds), the file is left with conflict markers and is not JSON any more.
+
 - After onboarding, tracked files hold the person's choices: `config/build_f.json` (name, city, her clock),
   `config/word_replace.json` (the pronunciation rule for their name), `config/llm_roles.json` (Setup → Brain) and
   `brain/表层.txt`, `例子.txt`, `思考.txt`, `scenes.json` (Setup → Personality). A plain `git pull` stops on them
@@ -1265,8 +1274,9 @@ damaged packages, the ZIP's nested folder and the cd line, the Hugging Face toke
 downloads, Python 3.11 / 3.12 / 3.13), the launcher's ports (`tests/test_launch_ports.py`: a bind not a connect,
 WinError 10013, the excluded ranges, a reserved port moved in `settings.json`, the window that stays open after a
 failure), what her voice reads (`tests/test_tts_text.py`), the OpenRouter balance, catalog check and provider lines
-(`tests/test_openrouter_feedback.py`), `Update_OpenAmika.bat` (`tests/test_update_script.py`), the SenseVoice
-downloader, and `setup_tts.py` against a local stand-in for Hugging Face
+(`tests/test_openrouter_feedback.py`), `Update_OpenAmika.bat` (`tests/test_update_script.py`: static checks, and a
+throwaway clone from before the script existed, updated with the README's three lines, with and without a file both
+sides changed), the SenseVoice downloader, and `setup_tts.py` against a local stand-in for Hugging Face
 (`tests/test_setup_tts.py`: public, private with and without a token, the CDN and a mirror never seeing the token,
 resume, verify, repair, `--from-dir` (also a copy without the doll), banks.json, the paper doll at its own revision
 and before it is pinned).
