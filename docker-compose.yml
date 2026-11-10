@@ -1,0 +1,10 @@
+version: '3.8'
+
+services:
+  openamika:
+    image: alpine:latest
+    container_name: openamika
+    command: sh -c "echo 'OpenAmika running on my fork' && sleep infinity"
+    restart: unless-stopped
+    ports:
+      - "4000:4000"
