@@ -11,7 +11,7 @@ Amika là một cô gái anime Live2D, trò chuyện với bạn bằng giọng 
 và sống cùng bạn trong thành phố của bạn. Cô ấy chạy trên chính PC của bạn, dùng OpenRouter hoặc hoàn toàn cục bộ
 với Ollama. Một bản lưu trữ sẵn đang chạy tại [mekahime.com/amika](https://www.mekahime.com/amika).
 
-[简体中文](README.zh-CN.md) | [日本語](README.ja.md) | [English](README.md) | **Tiếng Việt**
+[简体中文](README.zh-CN.md) | [日本語](README.ja.md) | [English](README.md) | **Tiếng Việt** | [한국어](README.ko.md)
 
 [![Made with Love](https://img.shields.io/badge/Made%20with-Love-ff69b4)](https://www.mekahime.com/openamika)
 [![GitHub](https://img.shields.io/badge/GitHub-zeekk0%2FOpenAmika-181717?logo=github)](https://github.com/zeekk0/OpenAmika)

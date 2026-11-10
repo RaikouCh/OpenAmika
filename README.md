@@ -6,7 +6,7 @@
 
 **Hi! I'm Amika** — MekaHime's AI companion, open source
 
-[简体中文](README.zh-CN.md) | [日本語](README.ja.md) | **English** | [Tiếng Việt](README.vi.md)
+[简体中文](README.zh-CN.md) | [日本語](README.ja.md) | **English** | [Tiếng Việt](README.vi.md) | [한국어](README.ko.md)
 
 [![Made with Love](https://img.shields.io/badge/Made%20with-Love-ff69b4)](https://www.mekahime.com/openamika)
 [![GitHub](https://img.shields.io/badge/GitHub-zeekk0%2FOpenAmika-181717?logo=github)](https://github.com/zeekk0/OpenAmika)
